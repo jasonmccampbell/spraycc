@@ -1,0 +1,2 @@
+# spraycc
+Distributed build wrapper
