@@ -102,7 +102,7 @@ pub enum Message {
     PissOff,
 
     /// A connection was dropped, sent from the connection to the local event loop
-    Dropped(),
+    Dropped,
 }
 
 /// Normally would be automatically derived, but I don't want to dump the buffer contents. Is there a way
@@ -123,7 +123,7 @@ impl fmt::Debug for Message {
             Message::TaskDone { exit_code } => write!(f, "TaskDone, exit code {}", exit_code.unwrap_or(-1)),
             Message::CancelTask => write!(f, "CancelTask"),
             Message::PissOff => write!(f, "PissOff"),
-            Message::Dropped() => write!(f, "Dropped"),
+            Message::Dropped => write!(f, "Dropped"),
         }
     }
 }

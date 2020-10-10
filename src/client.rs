@@ -44,26 +44,35 @@ pub async fn run(args: Vec<String>) -> Result<i32, Box<dyn Error + Send + Sync>>
     if run_local {
         unimplemented!("Run local");
     } else if let Some(callme) = config::read_server_contact_info() {
-        let stream = TcpStream::connect(callme.addr).await?;
-        let mut conn = ipc::Connection::new(stream);
+        match TcpStream::connect(callme.addr).await {
+            Ok(stream) => {
+                let mut conn = ipc::Connection::new(stream);
 
-        let mut output_files = open_output_files(&task).await?;
+                let mut output_files = open_output_files(&task).await?;
 
-        // Start by sending the task to the server. This tells the server this process is a client as well as providing the task data.
-        conn.write_message(&ipc::Message::Task {
-            access_code: callme.access_code,
-            details: task,
-        })
-        .await?;
+                // Start by sending the task to the server. This tells the server this process is a client as well as providing the task data.
+                conn.write_message(&ipc::Message::Task {
+                    access_code: callme.access_code,
+                    details: task,
+                })
+                .await?;
 
-        while status.is_none() {
-            match conn.read_message().await? {
-                Some(msg) => status = handle_msg(&mut output_files, msg).await?,
-                None => {
-                    // TODO: This is only an issue if a task hasn't completed. But since we block on tasks...
-                    println!("Exec: connection dropped");
-                    break;
+                while status.is_none() {
+                    match conn.read_message().await? {
+                        Some(msg) => status = handle_msg(&mut output_files, msg).await?,
+                        None => {
+                            // TODO: This is only an issue if a task hasn't completed. But since we block on tasks...
+                            println!("Exec: connection dropped");
+                            break;
+                        }
+                    }
                 }
+            }
+            Err(err) => {
+                println!(
+                    "Unable to connect to server at {}, please make sure it was started with 'spraycc server': {}",
+                    callme.addr, err
+                );
             }
         }
     } else {

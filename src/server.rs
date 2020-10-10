@@ -1,18 +1,24 @@
+extern crate get_if_addrs;
 extern crate tokio;
 
 // Setup some tokens to allow us to identify which event is
 // for which socket.
+use get_if_addrs::{get_if_addrs, Interface};
 use std::collections::VecDeque;
 use std::error::Error;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 
+use super::config::write_server_contact_info;
 use super::ipc;
 
+#[derive(Debug, PartialEq)]
 enum ConnectionType {
     Pending,
     Client,
     Exec,
+    Dead,
 }
 
 /// Defines one remote connection. Each connection is a task which manages the socket connection and
@@ -61,6 +67,24 @@ impl ServerState {
             paired_id: None,
         });
         self.remotes.len() - 1
+    }
+
+    /// A connection was dropped, perhaps expectedly, perhaps not.
+    async fn handle_dropped(self: &mut ServerState, conn_id: usize) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let remote = &self.remotes[conn_id];
+        if let Some(other_id) = remote.paired_id {
+            if remote.conn_type == ConnectionType::Exec {
+                // Notify the client that something bad has happened...
+                self.remotes[other_id as usize]
+                    .send_chan
+                    .send(ipc::Message::TaskFailed {
+                        error_message: String::from("Internal error"),
+                    })
+                    .await?;
+            }
+        }
+        self.remotes[conn_id].conn_type = ConnectionType::Dead;
+        Ok(())
     }
 
     /// A remote is identified after it sends its first message. In this case, the remote is a client and submitted
@@ -126,8 +150,15 @@ impl ServerState {
 /// Main server loop. This starts a socket listener to wait for remote connections. Each connection
 /// is spun off as a separate task, which relays backs back over an MPSC.
 pub async fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
-    let mut listener = TcpListener::bind("127.0.0.1:45678").await.unwrap();
-    println!("Server started");
+    let ip_addr = get_network_addr();
+    let callme = ipc::CallMe {
+        addr: SocketAddr::new(ip_addr, 45678),
+        access_code: 42,
+    };
+    write_server_contact_info(&callme)?;
+
+    let mut listener = TcpListener::bind(&callme.addr).await?;
+    println!("Server started on {}", listener.local_addr().unwrap());
 
     let (inbound_tx, mut inbound_rx) = mpsc::channel::<(usize, ipc::Message)>(256);
 
@@ -195,6 +226,7 @@ async fn handle_connection(
         }
     }
     println!("Connection {} closed", conn_id);
+    tx_chan.send((conn_id, ipc::Message::Dropped)).await?;
     Ok(())
 }
 
@@ -226,12 +258,37 @@ async fn handle_msg(server_state: &mut ServerState, conn_id: usize, msg: ipc::Me
             // TODO: implement cancellation
             unimplemented!("Task cancellation");
         }
-        ipc::Message::Dropped() => {
-            unimplemented!("Dropped connections");
+        ipc::Message::Dropped => {
+            server_state.handle_dropped(conn_id).await?;
         }
         ipc::Message::PissOff { .. } => {
             panic!("A lowly remote should never tell the server to piss off");
         }
     }
     Ok(())
+}
+
+fn get_network_addr() -> std::net::IpAddr {
+    match get_if_addrs() {
+        Ok(ifaces) => {
+            let non_loops: Vec<&Interface> = ifaces.iter().filter(|iface| !iface.is_loopback()).collect();
+            if non_loops.is_empty() {
+                println!("No network interfaces found, falling back to loopback");
+                IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))
+            } else {
+                if non_loops.len() > 1 {
+                    println!(
+                        "Warning: multiple network interace found, using {} ({})",
+                        non_loops[0].name,
+                        non_loops[0].ip()
+                    );
+                }
+                non_loops[0].ip()
+            }
+        }
+        Err(err) => {
+            println!("Warning: unable to get network interfaces, defaulting to loopback: {}", err);
+            IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))
+        }
+    }
 }
