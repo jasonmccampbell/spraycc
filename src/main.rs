@@ -5,7 +5,6 @@ use clap::{App, AppSettings, Arg, SubCommand};
 use std::error::Error;
 use std::fs::OpenOptions;
 use std::io::Write;
-use tokio::net::{TcpListener, TcpStream};
 
 /// # client
 /// Module implementing the client wrapper which submits a task to the cluster

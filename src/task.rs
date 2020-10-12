@@ -89,11 +89,15 @@ fn redirect_outputs(args: &mut Vec<String>, output_args: &[u16]) -> Result<(Opti
 ///
 /// The generated file name is based on the base_name provided, and uniquified against the `taken_names`
 /// hash set. `output_dir` is assumed to be empty except for the entries in `taken_names`.
-fn generate_unique_file(output_dir: &TempDir, taken_names: &mut HashSet<String>, base_name: &str) -> PathBuf {
-    let mut unique_name = String::from(base_name);
+fn generate_unique_file(output_dir: &TempDir, taken_names: &mut HashSet<String>, output_name: &str) -> PathBuf {
+    // TODO: All this complexity to preserve the output name. Better to just use "output.N" or something?
+    let output_pb = PathBuf::from(output_name);
+    let base_name = output_pb.file_name().map_or(std::ffi::OsString::from("unknown"), |s| s.to_os_string());
+
+    let mut unique_name = base_name.to_string_lossy().to_string();
     let mut idx = 1;
-    while taken_names.contains(unique_name.as_str()) {
-        unique_name = String::from(base_name);
+    while taken_names.contains(&unique_name) {
+        unique_name = base_name.to_string_lossy().to_string();
         unique_name.push('.');
         unique_name.push_str(&idx.to_string());
         idx += 1;

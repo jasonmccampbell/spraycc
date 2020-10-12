@@ -15,6 +15,32 @@ use tokio::net::TcpStream;
 use super::config;
 use super::ipc;
 
+/// A lazy file opener
+enum LazyFile {
+    FileName { file_name: String },
+    File { file: tokio::fs::File },
+}
+
+impl LazyFile {
+    pub fn new(file_name: String) -> LazyFile {
+        LazyFile::FileName { file_name }
+    }
+
+    /// Opens the file if not already open
+    pub async fn as_file(self: &mut LazyFile) -> Result<&mut tokio::fs::File, Box<dyn Error + Send + Sync>> {
+        if let LazyFile::FileName { file_name } = self {
+            *self = LazyFile::File {
+                file: tokio::fs::File::open(file_name).await?,
+            };
+        }
+        if let LazyFile::File { file } = self {
+            Ok(file)
+        } else {
+            panic!("Should not be possible");
+        }
+    }
+}
+
 /// Runs the client which submits the task to the server and waits for the output of all generated files,
 /// plus stdout/stderr to be returned.
 pub async fn run(args: Vec<String>) -> Result<i32, Box<dyn Error + Send + Sync>> {
@@ -48,7 +74,7 @@ pub async fn run(args: Vec<String>) -> Result<i32, Box<dyn Error + Send + Sync>>
             Ok(stream) => {
                 let mut conn = ipc::Connection::new(stream);
 
-                let mut output_files = open_output_files(&task).await?;
+                let mut output_files = make_output_files(&task);
 
                 // Start by sending the task to the server. This tells the server this process is a client as well as providing the task data.
                 conn.write_message(&ipc::Message::Task {
@@ -90,7 +116,7 @@ pub async fn run(args: Vec<String>) -> Result<i32, Box<dyn Error + Send + Sync>>
 /// Returns: None if all is fine and the task has not yet finished.
 ///          Some(status) if the task is finished where status == 0 means all ok, status > 0 is exit code,
 ///          and status < 0 means the task failed (couldn't find executable, aborted on signal, etc)
-async fn handle_msg(output_files: &mut Vec<tokio::fs::File>, msg: ipc::Message) -> Result<Option<i32>, Box<dyn Error + Sync + Send>> {
+async fn handle_msg(output_files: &mut Vec<LazyFile>, msg: ipc::Message) -> Result<Option<i32>, Box<dyn Error + Sync + Send>> {
     match msg {
         ipc::Message::TaskOutput { output_type, content } => {
             write_output(output_files, output_type, content).await?;
@@ -111,32 +137,21 @@ async fn handle_msg(output_files: &mut Vec<tokio::fs::File>, msg: ipc::Message) 
 }
 
 /// Writes returned content to stdout, stderr, or a file produced by the compiler
-async fn write_output(
-    output_files: &mut Vec<tokio::fs::File>,
-    output_type: ipc::OutputType,
-    content: Vec<u8>,
-) -> Result<(), Box<dyn Error + Send + Sync>> {
+async fn write_output(output_files: &mut Vec<LazyFile>, output_type: ipc::OutputType, content: Vec<u8>) -> Result<(), Box<dyn Error + Send + Sync>> {
     match output_type {
         ipc::OutputType::Stdout => tokio::io::stdout().write_all(&content).await?,
         ipc::OutputType::Stderr => tokio::io::stderr().write_all(&content).await?,
-        ipc::OutputType::File(idx) => output_files[idx].write_all(&content).await?,
+        ipc::OutputType::File(idx) => output_files[idx].as_file().await?.write_all(&content).await?,
     }
     Ok(())
 }
 
-/// Opens each of the output files for the process for the runner to dump content into
-async fn open_output_files(task: &ipc::TaskDetails) -> Result<Vec<tokio::fs::File>, String> {
-    let mut files: Vec<tokio::fs::File> = Vec::new();
-    for idx in &task.output_args {
-        let file_name = &task.args[*idx as usize];
-        match tokio::fs::File::create(&file_name).await {
-            Ok(f) => files.push(f),
-            Err(err) => {
-                return Err(format!("Unable to open output file '{}': {}", &file_name, err));
-            }
-        }
-    }
-    Ok(files)
+/// Generate a LazyFile for each of the output files
+fn make_output_files(task: &ipc::TaskDetails) -> Vec<LazyFile> {
+    task.output_args
+        .iter()
+        .map(|idx| LazyFile::new(task.args[*idx as usize].clone()))
+        .collect()
 }
 
 /// Interprets the given command line
