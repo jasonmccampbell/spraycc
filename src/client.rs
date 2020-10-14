@@ -30,7 +30,7 @@ impl LazyFile {
     pub async fn as_file(self: &mut LazyFile) -> Result<&mut tokio::fs::File, Box<dyn Error + Send + Sync>> {
         if let LazyFile::FileName { file_name } = self {
             *self = LazyFile::File {
-                file: tokio::fs::File::open(file_name).await?,
+                file: tokio::fs::File::create(file_name).await?,
             };
         }
         if let LazyFile::File { file } = self {
@@ -88,7 +88,7 @@ pub async fn run(args: Vec<String>) -> Result<i32, Box<dyn Error + Send + Sync>>
                         Some(msg) => status = handle_msg(&mut output_files, msg).await?,
                         None => {
                             // TODO: This is only an issue if a task hasn't completed. But since we block on tasks...
-                            println!("Exec: connection dropped");
+                            println!("Client: connection dropped");
                             break;
                         }
                     }
@@ -110,7 +110,7 @@ pub async fn run(args: Vec<String>) -> Result<i32, Box<dyn Error + Send + Sync>>
     Ok(status.expect("No task status as set"))
 }
 
-/// Handles messages coming from the executor via the server. These will be stderr, stdout and generated files from
+/// Handles messages coming from the client via the server. These will be stderr, stdout and generated files from
 /// the execution of the task, and then finally the task status.
 ///
 /// Returns: None if all is fine and the task has not yet finished.
@@ -127,7 +127,7 @@ async fn handle_msg(output_files: &mut Vec<LazyFile>, msg: ipc::Message) -> Resu
             Ok(Some(-1))
         }
         ipc::Message::TaskDone { exit_code } => {
-            println!("Task done, exited with {:?}", exit_code);
+            // println!("Task done, exited with {:?}", exit_code);
             Ok(exit_code)
         }
         _ => {
@@ -164,7 +164,7 @@ fn interpret_command_line(args: Vec<String>) -> Result<(bool, ipc::TaskDetails),
     match which::which(OsString::from(&args[0])) {
         Ok(cmd) => {
             let cmd_name = cmd.file_name().map(|s| s.to_string_lossy()).unwrap(); // Can this fail if path exists?
-            println!("Got file name: {}", cmd_name);
+                                                                                  // println!("Got file name: {}", cmd_name);
 
             let (keep_local, output_args) = {
                 if cmd_name == "gcc" || cmd_name == "g++" || cmd_name == "clang" {

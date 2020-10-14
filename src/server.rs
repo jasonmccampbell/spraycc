@@ -40,6 +40,12 @@ struct ServerState {
     task_queue: VecDeque<(usize, ipc::TaskDetails)>,
     /// Queue of exec IDs waiting for tasks
     exec_queue: VecDeque<usize>,
+    /// Total tasks submitted
+    submit_count: usize,
+    /// Total tasks completed
+    finish_count: usize,
+    /// Have all tasks been submitted?
+    all_submitted: bool,
 }
 
 impl ServerState {
@@ -48,6 +54,9 @@ impl ServerState {
             remotes: vec![],
             task_queue: VecDeque::new(),
             exec_queue: VecDeque::new(),
+            submit_count: 0,
+            finish_count: 0,
+            all_submitted: false,
         }
     }
 
@@ -143,6 +152,13 @@ impl ServerState {
                 })
                 .await?;
         }
+        println!(
+            "Status: {} / {} finished, {} running",
+            self.finish_count,
+            self.submit_count,
+            self.submit_count - self.finish_count - self.task_queue.len()
+        );
+        println!("Queues: {}, {}", self.task_queue.len(), self.exec_queue.len());
         Ok(())
     }
 }
@@ -241,6 +257,7 @@ async fn handle_msg(server_state: &mut ServerState, conn_id: usize, msg: ipc::Me
         }
         ipc::Message::Task { access_code, details } => {
             println!("{}: client, task {:?}", conn_id, details);
+            server_state.submit_count += 1;
             server_state.remote_is_client(conn_id, details).await?;
         }
         ipc::Message::TaskOutput { .. } => {
@@ -248,10 +265,12 @@ async fn handle_msg(server_state: &mut ServerState, conn_id: usize, msg: ipc::Me
         }
         ipc::Message::TaskDone { .. } => {
             server_state.send_to_paired_remote(conn_id, msg).await?;
+            server_state.finish_count += 1;
             server_state.exec_is_ready(conn_id).await?;
         }
         ipc::Message::TaskFailed { .. } => {
             server_state.send_to_paired_remote(conn_id, msg).await?;
+            server_state.finish_count += 1;
             server_state.exec_is_ready(conn_id).await?;
         }
         ipc::Message::CancelTask { .. } => {
