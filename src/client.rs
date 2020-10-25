@@ -11,6 +11,7 @@ use std::error::Error;
 use std::ffi::OsString;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
+use tokio::process;
 
 use super::config;
 use super::ipc;
@@ -68,7 +69,7 @@ pub async fn run(args: Vec<String>) -> Result<i32, Box<dyn Error + Send + Sync>>
 
     let mut status: Option<i32> = None;
     if run_local {
-        unimplemented!("Run local");
+        status = run_local_task(task).await?;
     } else if let Some(callme) = config::read_server_contact_info() {
         match TcpStream::connect(callme.addr).await {
             Ok(stream) => {
@@ -154,6 +155,25 @@ fn make_output_files(task: &ipc::TaskDetails) -> Vec<LazyFile> {
         .collect()
 }
 
+/// Runs a 'task' locally and returns the result as an option where an integer value
+/// present indicates the exit code and None indicates another kind of failure, such
+/// as terminated by signal or command doesn't exist.
+async fn run_local_task(task: ipc::TaskDetails) -> Result<Option<i32>, Box<dyn Error + Send + Sync>> {
+    let cmd = task.cmd;
+    let child = process::Command::new(&cmd)
+        .args(task.args.iter())
+        .current_dir(task.working_dir)
+        .spawn()
+        .unwrap_or_else(|_| panic!("Failed to start process {}", cmd.to_string_lossy()));
+    match child.wait_with_output().await {
+        Ok(status) => Ok(status.status.code()),
+        Err(err) => {
+            println!("Error: {}", err);
+            Ok(None)
+        }
+    }
+}
+
 /// Interprets the given command line
 /// Based on the command being read, returns the indexes of the arguments which are the names of files written by this
 /// command. That is, the files which need to be captured and returned to the origin.
@@ -211,6 +231,52 @@ fn handle_gnu(args: &[String]) -> (bool, Vec<u16>) {
         }
     }
     (keep_local, output_idxs)
+}
+
+/// Simply sends the 'last' message to the server and waits for a 'piss off' or the connection to drop. All this
+/// does is let the server know that "no more items" are coming. In quotes, because there are two options for ths:
+///  Option 1, the safe option: wait until all tasks are completed before sending this. The queue should be empty.
+///  Option 2, the realistic one: instead of holding exec processes active while the last task completes, this can be
+///            send as soon as all jobs have been started. But there is a race condition in that 'last' could arrive
+///            before a few of the task submissions are processed. So there is a few second delay on the server that
+///            isn't guaranteeded to be right, but in practice lets the exec's be shutdown early.
+pub async fn last() -> Result<(), Box<dyn Error + Send + Sync>> {
+    if let Some(callme) = config::read_server_contact_info() {
+        match TcpStream::connect(callme.addr).await {
+            Ok(stream) => {
+                let mut conn = ipc::Connection::new(stream);
+
+                // Send the message
+                conn.write_message(&ipc::Message::LastTaskSent).await?;
+
+                // Can't close the socket right away so wait for a piss off message or the connection to drop
+                match conn.read_message().await? {
+                    Some(msg) => {
+                        if let ipc::Message::PissOff = msg {
+                            // Expected
+                        } else {
+                            assert!(false, "Unexpected message type received: {:?}", msg);
+                        }
+                    }
+                    None => {
+                        // Expected
+                    }
+                }
+            }
+            Err(err) => {
+                println!(
+                    "Unable to connect to server at {}, please make sure it was started with 'spraycc server': {}",
+                    callme.addr, err
+                );
+            }
+        }
+    } else {
+        println!("Has the server been started in this same directory tree?");
+        panic!("No server configuration found");
+        // TODO: error handling
+        // Err(String::from("No server configuration found"))
+    }
+    Ok(())
 }
 
 #[test]

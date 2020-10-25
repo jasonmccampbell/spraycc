@@ -7,11 +7,16 @@ use get_if_addrs::{get_if_addrs, Interface};
 use std::collections::VecDeque;
 use std::error::Error;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::time::{Duration, SystemTime};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 
 use super::config::write_server_contact_info;
 use super::ipc;
+
+/// Delay from receiving 'all tasks submitted' to actually shutting down execs to allow for late arrivals
+const IDLE_SHUTDOWN_DELAY: Duration = Duration::from_secs(5);
+const ZERO_DURATION: Duration = Duration::from_secs(0);
 
 #[derive(Debug, PartialEq)]
 enum ConnectionType {
@@ -44,8 +49,8 @@ struct ServerState {
     submit_count: usize,
     /// Total tasks completed
     finish_count: usize,
-    /// Have all tasks been submitted?
-    all_submitted: bool,
+    /// Have all tasks been submitted? Some w/ time when notified
+    all_submitted: Option<SystemTime>,
 }
 
 impl ServerState {
@@ -56,7 +61,7 @@ impl ServerState {
             exec_queue: VecDeque::new(),
             submit_count: 0,
             finish_count: 0,
-            all_submitted: false,
+            all_submitted: None,
         }
     }
 
@@ -118,14 +123,20 @@ impl ServerState {
         self.check_queues().await
     }
 
+    async fn no_more_tasks_coming(self: &mut ServerState, conn_id: usize) -> Result<(), Box<dyn Error + Send + Sync>> {
+        self.all_submitted = Some(SystemTime::now());
+        self.remotes[conn_id].send_chan.send(ipc::Message::PissOff).await?;
+        self.check_queues().await
+    }
+
     /// Check the task and ready exec queues to see if anything can be assigned
     async fn check_queues(self: &mut ServerState) -> Result<(), Box<dyn Error + Send + Sync>> {
         while !self.task_queue.is_empty() && !self.exec_queue.is_empty() {
             let (client_id, task) = self.task_queue.pop_front().unwrap();
             let exec_id = self.exec_queue.pop_front().unwrap();
-            println!("Queue processing: client_id={}, exec_id={}, task={:?}", client_id, exec_id, &task);
             assert!(client_id != exec_id, "Somehow exec and client ID are the same");
 
+            // Pair the client w/ the executor running the task
             let client = &mut self.remotes[client_id];
             assert!(
                 client.paired_id.is_none(),
@@ -135,6 +146,7 @@ impl ServerState {
             );
             client.paired_id = Some(exec_id as u32);
 
+            // ... and the executor with the client submitting the task
             let exec = &mut self.remotes[exec_id];
             assert!(
                 exec.paired_id.is_none(),
@@ -152,13 +164,29 @@ impl ServerState {
                 })
                 .await?;
         }
+
+        // If no more task are coming, shut down idle executors
+        if let Some(last_task_time) = self.all_submitted {
+            println!(
+                "Last task time received: {}",
+                SystemTime::now().duration_since(last_task_time).unwrap().as_secs()
+            );
+            if SystemTime::now().duration_since(last_task_time).unwrap_or(ZERO_DURATION) > IDLE_SHUTDOWN_DELAY {
+                while !self.exec_queue.is_empty() {
+                    let exec_id = self.exec_queue.pop_front().unwrap();
+                    let exec = &mut self.remotes[exec_id];
+                    exec.conn_type = ConnectionType::Dead;
+                    exec.send_chan.send(ipc::Message::PissOff {}).await?;
+                }
+            }
+        }
+
         println!(
             "Status: {} / {} finished, {} running",
             self.finish_count,
             self.submit_count,
             self.submit_count - self.finish_count - self.task_queue.len()
         );
-        println!("Queues: {}, {}", self.task_queue.len(), self.exec_queue.len());
         Ok(())
     }
 }
@@ -191,7 +219,7 @@ pub async fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
                 tokio::spawn(async move {
                     match handle_connection(socket, remote_id, in_tx, outbound_rx).await {
                         Ok(_) => {
-                            println!("Connection {}: closed", remote_id);
+                            // pass
                         }
                         Err(err) => {
                             println!("Connection {}: error on connection: {}", remote_id, err);
@@ -241,7 +269,6 @@ async fn handle_connection(
             }
         }
     }
-    println!("Connection {} closed", conn_id);
     tx_chan.send((conn_id, ipc::Message::Dropped)).await?;
     Ok(())
 }
@@ -249,14 +276,11 @@ async fn handle_connection(
 /// On the main server thread, handle a message from either a client or exec remote. Often this involves
 /// forwarding a message to another remote.
 async fn handle_msg(server_state: &mut ServerState, conn_id: usize, msg: ipc::Message) -> Result<(), Box<dyn Error + Send + Sync>> {
-    println!("From {}: {:?}", conn_id, msg);
     match msg {
         ipc::Message::YourObedientServant { access_code } => {
-            println!("{}: executor, code {}", conn_id, access_code);
             server_state.remote_is_exec(conn_id).await?;
         }
         ipc::Message::Task { access_code, details } => {
-            println!("{}: client, task {:?}", conn_id, details);
             server_state.submit_count += 1;
             server_state.remote_is_client(conn_id, details).await?;
         }
@@ -272,6 +296,12 @@ async fn handle_msg(server_state: &mut ServerState, conn_id: usize, msg: ipc::Me
             server_state.send_to_paired_remote(conn_id, msg).await?;
             server_state.finish_count += 1;
             server_state.exec_is_ready(conn_id).await?;
+        }
+        ipc::Message::LastTaskSent { .. } => {
+            // "No more" tasks are expected and idle exec processes can be shut down. In quotes because there is
+            // a race condition where tasks could arrive after this message, but realistically that's within a few
+            // seconds at most.
+            server_state.no_more_tasks_coming(conn_id).await?;
         }
         ipc::Message::CancelTask { .. } => {
             // TODO: implement cancellation

@@ -95,6 +95,9 @@ pub enum Message {
         exit_code: Option<i32>,
     },
 
+    /// Indicates the server can assume no more tasks are coming (within some bounds of a race condition w/ timing)
+    LastTaskSent,
+
     // A specific task should be canceled
     CancelTask,
 
@@ -121,6 +124,7 @@ impl fmt::Debug for Message {
             },
             Message::TaskFailed { error_message } => write!(f, "TaskDone, error: {}", error_message),
             Message::TaskDone { exit_code } => write!(f, "TaskDone, exit code {}", exit_code.unwrap_or(-1)),
+            Message::LastTaskSent => write!(f, "LastTaskSend"),
             Message::CancelTask => write!(f, "CancelTask"),
             Message::PissOff => write!(f, "PissOff"),
             Message::Dropped => write!(f, "Dropped"),
@@ -173,7 +177,6 @@ impl Connection {
 
     pub async fn write_message(&mut self, msg: &Message) -> Result<()> {
         let data: Vec<u8> = bincode::serialize(&msg).unwrap();
-        println!("Encoded msg {:?}, length={}", msg, data.len());
         let mut sz = [0; 4];
 
         BigEndian::write_u32(&mut sz, data.len() as u32);

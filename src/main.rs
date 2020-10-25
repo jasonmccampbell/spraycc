@@ -56,6 +56,7 @@ async fn main() {
                 .setting(AppSettings::TrailingVarArg)
                 .arg(Arg::with_name("compiler_options").help("Command line to be executed").multiple(true)),
         )
+        .subcommand(SubCommand::with_name("last").about("Indicates the last build item has been submitted"))
         // Used for testing to fake running a command that writes a file
         .subcommand(
             SubCommand::with_name("fakecc")
@@ -103,6 +104,8 @@ async fn main() {
             Ok(_) => Ok(()),
             Err(e) => Err(e),
         }
+    } else if let Some(_) = matches.subcommand_matches("last") {
+        client::last().await
     } else if let Some(fakecc) = matches.subcommand_matches("fakecc") {
         for output in fakecc.values_of("output_file").unwrap() {
             // C++: OpenOptions uses the builder pattern to do essentially the same as or'ing bit flags
