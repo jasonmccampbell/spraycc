@@ -1,4 +1,3 @@
-extern crate nix;
 ///
 /// The client is the command line wrapper for a single invokation of a compiler. It
 /// submits the compilation command line to the server and waits around until the

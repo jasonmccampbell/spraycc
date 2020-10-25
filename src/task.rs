@@ -1,4 +1,4 @@
-extern crate libc;
+extern crate gethostname;
 extern crate tempdir;
 
 use std::collections::HashSet;

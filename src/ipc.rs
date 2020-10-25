@@ -1,5 +1,6 @@
+extern crate byteorder;
 extern crate bytes;
-extern crate tokio_util;
+
 use byteorder::{BigEndian, ByteOrder};
 use bytes::{Buf, BytesMut};
 use serde::{Deserialize, Serialize};

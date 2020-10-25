@@ -201,7 +201,7 @@ pub async fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
     };
     write_server_contact_info(&callme)?;
 
-    let mut listener = TcpListener::bind(&callme.addr).await?;
+    let listener = TcpListener::bind(&callme.addr).await?;
     println!("Server started on {}", listener.local_addr().unwrap());
 
     let (inbound_tx, mut inbound_rx) = mpsc::channel::<(usize, ipc::Message)>(256);
@@ -242,7 +242,7 @@ pub async fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
 async fn handle_connection(
     stream: TcpStream,
     conn_id: usize,
-    mut tx_chan: mpsc::Sender<(usize, ipc::Message)>,
+    tx_chan: mpsc::Sender<(usize, ipc::Message)>,
     mut rx_chan: mpsc::Receiver<ipc::Message>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     let mut conn = ipc::Connection::new(stream);

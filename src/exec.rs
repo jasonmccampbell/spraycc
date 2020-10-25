@@ -1,5 +1,5 @@
-extern crate nix;
 extern crate tempdir;
+
 ///
 /// The executor processes are submitted to the farm and then pull jobs from the
 /// server, execute them, and return the results. The process goes away when told
@@ -97,12 +97,14 @@ async fn run_task(conn: &mut ipc::Connection, mut task: Task) -> Result<(), Box<
         }
     }
 
+    // Child should have exited if stdout and stderr are closed
+    let status = task.child.wait().await?;
+
     println!("Sending {} output files", task.output_files.len());
     for (idx, generated_file) in task.output_files.iter().enumerate() {
         send_output_file(conn, ipc::OutputType::File(idx), &generated_file).await?;
     }
 
-    let status = task.child.await?;
     conn.write_message(&ipc::Message::TaskDone { exit_code: status.code() }).await?;
     println!("Status = {:?}", status);
     Ok(())
