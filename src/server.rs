@@ -167,10 +167,6 @@ impl ServerState {
 
         // If no more task are coming, shut down idle executors
         if let Some(last_task_time) = self.all_submitted {
-            println!(
-                "Last task time received: {}",
-                SystemTime::now().duration_since(last_task_time).unwrap().as_secs()
-            );
             if SystemTime::now().duration_since(last_task_time).unwrap_or(ZERO_DURATION) > IDLE_SHUTDOWN_DELAY {
                 while !self.exec_queue.is_empty() {
                     let exec_id = self.exec_queue.pop_front().unwrap();
@@ -182,10 +178,11 @@ impl ServerState {
         }
 
         println!(
-            "Status: {} / {} finished, {} running",
+            "Status: {} / {} finished, {} running{}",
             self.finish_count,
             self.submit_count,
-            self.submit_count - self.finish_count - self.task_queue.len()
+            self.submit_count - self.finish_count - self.task_queue.len(),
+            if self.all_submitted.is_some() { " (all submitted)" } else { "" },
         );
         Ok(())
     }

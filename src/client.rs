@@ -19,6 +19,7 @@ use super::ipc;
 enum LazyFile {
     FileName { file_name: String },
     File { file: tokio::fs::File },
+    None {},
 }
 
 impl LazyFile {
@@ -36,8 +37,18 @@ impl LazyFile {
         if let LazyFile::File { file } = self {
             Ok(file)
         } else {
-            panic!("Should not be possible");
+            panic!("Attempt to use a shutdown file");
         }
+    }
+
+    /// If the file was opened, shut it down to ensure all data are written out. Can't be done as 'drop'
+    /// because shutdown is asynchronous.
+    pub async fn shutdown(self: &mut LazyFile) -> Result<(), Box<dyn Error + Send + Sync>> {
+        if let LazyFile::File { file } = self {
+            file.shutdown().await?;
+            *self = LazyFile::None {};
+        }
+        Ok(())
     }
 }
 
@@ -92,6 +103,11 @@ pub async fn run(args: Vec<String>) -> Result<i32, Box<dyn Error + Send + Sync>>
                             break;
                         }
                     }
+                }
+
+                // Ensure all data are written out
+                while !output_files.is_empty() {
+                    output_files.pop().unwrap().shutdown().await?
                 }
             }
             Err(err) => {
@@ -158,18 +174,22 @@ fn make_output_files(task: &ipc::TaskDetails) -> Vec<LazyFile> {
 /// present indicates the exit code and None indicates another kind of failure, such
 /// as terminated by signal or command doesn't exist.
 async fn run_local_task(task: ipc::TaskDetails) -> Result<Option<i32>, Box<dyn Error + Send + Sync>> {
-    let cmd = task.cmd;
-    let child = process::Command::new(&cmd)
-        .args(task.args.iter())
-        .current_dir(task.working_dir)
-        .spawn()
-        .unwrap_or_else(|_| panic!("Failed to start process {}", cmd.to_string_lossy()));
-    match child.wait_with_output().await {
-        Ok(status) => Ok(status.status.code()),
-        Err(err) => {
-            println!("Error: {}", err);
-            Ok(None)
+    if let Ok(cmd_path) = which::which(&task.cmd) {
+        let child = process::Command::new(&cmd_path)
+            .args(task.args.iter())
+            .current_dir(task.working_dir)
+            .spawn()
+            .unwrap_or_else(|_| panic!("Failed to start process {}", cmd_path.to_string_lossy()));
+        match child.wait_with_output().await {
+            Ok(status) => Ok(status.status.code()),
+            Err(err) => {
+                println!("Error: {}", err);
+                Ok(None)
+            }
         }
+    } else {
+        // TODO: Need an error string return type
+        panic!("Command {} does not exit", task.cmd.to_string_lossy());
     }
 }
 

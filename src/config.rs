@@ -25,7 +25,7 @@ pub fn read_server_contact_info() -> Option<ipc::CallMe> {
 
 fn read_server_contact_info_from(mut p: PathBuf) -> Option<ipc::CallMe> {
     p.push(CONNECT_FILE);
-    println!("Checking directory {}", p.to_string_lossy());
+    // println!("Checking directory {}", p.to_string_lossy());
     if p.exists() {
         match OpenOptions::new().read(true).open(&p) {
             Ok(mut f) => deserialize_contact_info(&p, &mut f),
