@@ -49,6 +49,7 @@ pub async fn run(callme: ipc::CallMe) -> Result<(), Box<dyn Error + Send + Sync>
                 break;
             }
         }
+        conn.flush().await?;
     }
     Ok(())
 }
@@ -57,7 +58,10 @@ async fn handle_new_task(conn: &mut ipc::Connection, details: ipc::TaskDetails) 
     println!("Got task {:?}", details);
     match Task::start(&details.working_dir, &details.cmd, details.args, &details.output_args) {
         Ok(task) => run_task(conn, task).await,
-        Err(err) => Err(err.into()),
+        Err(err) => {
+            conn.write_message(&ipc::Message::TaskFailed { error_message: err }).await?;
+            Ok(())
+        }
     }
 }
 

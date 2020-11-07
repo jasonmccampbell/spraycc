@@ -92,7 +92,7 @@ impl ServerState {
                 self.remotes[other_id as usize]
                     .send_chan
                     .send(ipc::Message::TaskFailed {
-                        error_message: String::from("Internal error"),
+                        error_message: String::from("exec dropped connection"),
                     })
                     .await?;
             }
@@ -155,6 +155,18 @@ impl ServerState {
                 exec.paired_id
             );
             exec.paired_id = Some(client_id as u32);
+
+            println!(
+                "Assigning task to exec {}: {}",
+                exec_id,
+                task.args.iter().fold(String::new(), |mut acc, s| {
+                    if !acc.is_empty() {
+                        acc.push_str(" ");
+                    }
+                    acc.push_str(s);
+                    acc
+                })
+            );
 
             // Send the task
             exec.send_chan

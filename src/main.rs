@@ -104,8 +104,6 @@ async fn main() {
             Ok(_) => Ok(()),
             Err(e) => Err(e),
         }
-    } else if let Some(_) = matches.subcommand_matches("last") {
-        client::last().await
     } else if let Some(fakecc) = matches.subcommand_matches("fakecc") {
         for output in fakecc.values_of("output_file").unwrap() {
             // C++: OpenOptions uses the builder pattern to do essentially the same as or'ing bit flags

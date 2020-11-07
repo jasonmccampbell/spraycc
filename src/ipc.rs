@@ -185,6 +185,11 @@ impl Connection {
         self.stream.write_all(&data).await?;
         Ok(())
     }
+
+    pub async fn flush(&mut self) -> Result<()> {
+        self.stream.flush().await?;
+        Ok(())
+    }
 }
 
 // #[cfg(test)]
