@@ -49,8 +49,10 @@ struct ServerState {
     submit_count: usize,
     /// Total tasks completed
     finish_count: usize,
-    /// Have all tasks been submitted? Some w/ time when notified
-    all_submitted: Option<SystemTime>,
+    /// Timestamp when the most recent task was received, or none if no task yet received
+    last_submit_time: Option<SystemTime>,
+    // Time to wait before releasing idle execs
+    exec_release_delay: std::time::Duration,
 }
 
 impl ServerState {
@@ -61,7 +63,8 @@ impl ServerState {
             exec_queue: VecDeque::new(),
             submit_count: 0,
             finish_count: 0,
-            all_submitted: None,
+            last_submit_time: None,
+            exec_release_delay: std::time::Duration::from_secs(30),
         }
     }
 
@@ -123,12 +126,6 @@ impl ServerState {
         self.check_queues().await
     }
 
-    async fn no_more_tasks_coming(self: &mut ServerState, conn_id: usize) -> Result<(), Box<dyn Error + Send + Sync>> {
-        self.all_submitted = Some(SystemTime::now());
-        self.remotes[conn_id].send_chan.send(ipc::Message::PissOff).await?;
-        self.check_queues().await
-    }
-
     /// Check the task and ready exec queues to see if anything can be assigned
     async fn check_queues(self: &mut ServerState) -> Result<(), Box<dyn Error + Send + Sync>> {
         while !self.task_queue.is_empty() && !self.exec_queue.is_empty() {
@@ -178,7 +175,7 @@ impl ServerState {
         }
 
         // If no more task are coming, shut down idle executors
-        if let Some(last_task_time) = self.all_submitted {
+        if let Some(last_task_time) = self.last_submit_time {
             if SystemTime::now().duration_since(last_task_time).unwrap_or(ZERO_DURATION) > IDLE_SHUTDOWN_DELAY {
                 while !self.exec_queue.is_empty() {
                     let exec_id = self.exec_queue.pop_front().unwrap();
@@ -194,7 +191,7 @@ impl ServerState {
             self.finish_count,
             self.submit_count,
             self.submit_count - self.finish_count - self.task_queue.len(),
-            if self.all_submitted.is_some() { " (all submitted)" } else { "" },
+            if self.last_submit_time.is_some() { " (all submitted)" } else { "" },
         );
         Ok(())
     }
@@ -305,12 +302,6 @@ async fn handle_msg(server_state: &mut ServerState, conn_id: usize, msg: ipc::Me
             server_state.send_to_paired_remote(conn_id, msg).await?;
             server_state.finish_count += 1;
             server_state.exec_is_ready(conn_id).await?;
-        }
-        ipc::Message::LastTaskSent { .. } => {
-            // "No more" tasks are expected and idle exec processes can be shut down. In quotes because there is
-            // a race condition where tasks could arrive after this message, but realistically that's within a few
-            // seconds at most.
-            server_state.no_more_tasks_coming(conn_id).await?;
         }
         ipc::Message::CancelTask { .. } => {
             // TODO: implement cancellation
