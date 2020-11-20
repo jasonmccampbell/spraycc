@@ -1,0 +1,27 @@
+
+# Executor options
+[exec]
+# Number of executors to start initially
+initial_count = 5
+# Maximum number of executors to keep running at one. Set to 'initial_count' to have all submitted at once.
+max_count = 200
+# Number of submitted, but not yet connected executors. This plus submit delays determins how fast the
+# cloud of executors increases fron initial_count to max_count.
+keep_pending = 3
+# Delay from last submitted task until idle executors are released
+release_delay = 30
+# Shutdown after idle for N seconds
+idle_shutdown_after = 60
+# Command used to start new executors. Options such as --callme will be appended.
+start_cmd = "bsub -q pegasus -n 1 -R 'rusage[mem=10GB]' -W 1:0 /home/jasonm/packages/spraycc/spraycc"
+
+
+[command.runqa]
+command = "runqa.sh"
+env_vars = ["GEOM_HOME", "FRED"]
+output_files = []
+
+[command.gcc]
+command = ["gcc", "g++", "clang"]
+output_files = ["after", "-o", "after", "-MF"]
+run_local_if = ["not_exists", ["-c", "-s", "-e", "-MD"]]

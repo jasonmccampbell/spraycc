@@ -9,9 +9,10 @@ use std::error::Error;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::{Duration, SystemTime};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::process::Command;
 use tokio::sync::mpsc;
 
-use super::config::write_server_contact_info;
+use super::config::{load_config_file, write_server_contact_info, ExecConfig};
 use super::ipc;
 
 /// Delay from receiving 'all tasks submitted' to actually shutting down execs to allow for late arrivals
@@ -49,22 +50,34 @@ struct ServerState {
     submit_count: usize,
     /// Total tasks completed
     finish_count: usize,
+    /// Number of exec processes start but which have not yet phoned home
+    pending_exec_count: usize,
+    /// Number of currently running exec processes
+    running_exec_count: usize,
     /// Timestamp when the most recent task was received, or none if no task yet received
     last_submit_time: Option<SystemTime>,
-    // Time to wait before releasing idle execs
-    exec_release_delay: std::time::Duration,
+    // User configuration parameters
+    user_config: ExecConfig,
+    // Exec process start command
+    start_cmd: String,
 }
 
 impl ServerState {
-    fn new() -> ServerState {
+    fn new(port: ipc::CallMe) -> ServerState {
+        let mut config = load_config_file();
+        let start_cmd = format!("{} exec --callme={} --code={}", config.start_cmd, port.addr, port.access_code);
+
         ServerState {
             remotes: vec![],
             task_queue: VecDeque::new(),
             exec_queue: VecDeque::new(),
             submit_count: 0,
             finish_count: 0,
+            pending_exec_count: 0,
+            running_exec_count: 0,
             last_submit_time: None,
-            exec_release_delay: std::time::Duration::from_secs(30),
+            user_config: config,
+            start_cmd: start_cmd,
         }
     }
 
@@ -100,6 +113,10 @@ impl ServerState {
                     .await?;
             }
         }
+
+        if remote.conn_type == ConnectionType::Exec {
+            self.running_exec_count -= 1;
+        }
         self.remotes[conn_id].conn_type = ConnectionType::Dead;
         Ok(())
     }
@@ -110,6 +127,7 @@ impl ServerState {
     async fn remote_is_client(self: &mut ServerState, conn_id: usize, details: ipc::TaskDetails) -> Result<(), Box<dyn Error + Send + Sync>> {
         self.remotes[conn_id].conn_type = ConnectionType::Client;
         self.task_queue.push_back((conn_id, details));
+        self.start_execs().await;
         self.check_queues().await
     }
 
@@ -117,12 +135,18 @@ impl ServerState {
     /// available to start processing tasks. If one is available, the task is sent to it.
     async fn remote_is_exec(self: &mut ServerState, conn_id: usize) -> Result<(), Box<dyn Error + Send + Sync>> {
         self.remotes[conn_id].conn_type = ConnectionType::Exec;
+        self.running_exec_count += 1;
+        if self.pending_exec_count > 0 {
+            self.pending_exec_count -= 1;
+        }
         self.exec_is_ready(conn_id).await
     }
 
+    /// A remote exec process is ready for a new task, either because it is new or has completed the assigned task
     async fn exec_is_ready(self: &mut ServerState, conn_id: usize) -> Result<(), Box<dyn Error + Send + Sync>> {
         self.exec_queue.push_back(conn_id);
         self.remotes[conn_id].paired_id = None;
+        self.start_execs().await;
         self.check_queues().await
     }
 
@@ -195,6 +219,26 @@ impl ServerState {
         );
         Ok(())
     }
+
+    /// Check to see if we need to start more exec engines
+    async fn start_execs(self: &mut ServerState) {
+        if !self.task_queue.is_empty() {
+            while self.pending_exec_count < self.user_config.keep_pending
+                && self.running_exec_count + self.pending_exec_count < self.user_config.max_count
+            {
+                match Command::new("sh").arg("-c").arg(&self.start_cmd).spawn() {
+                    Ok(_) => {
+                        self.pending_exec_count += 1;
+                        println!("Exec started");
+                        // Tokio does not do kill-on-drop by default, so we let the child run and hopefully finish quickly
+                    }
+                    Err(err) => {
+                        println!("Error starting exec process '{}': {}", &self.start_cmd, err);
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Main server loop. This starts a socket listener to wait for remote connections. Each connection
@@ -212,7 +256,7 @@ pub async fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
 
     let (inbound_tx, mut inbound_rx) = mpsc::channel::<(usize, ipc::Message)>(256);
 
-    let mut server_state = ServerState::new();
+    let mut server_state = ServerState::new(callme);
     loop {
         tokio::select! {
             socket_res = listener.accept() => {
