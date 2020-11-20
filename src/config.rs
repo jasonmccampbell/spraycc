@@ -32,9 +32,9 @@ pub struct ExecConfig {
     /// Number of exec's pending as count climbs towards max
     pub keep_pending: usize,
     /// Idle delay when no more task have arrived to start releasing idle exec's
-    pub release_delay: usize,
+    pub release_delay: u64,
     /// Idle delay when no tasks are running or arriving to shutdown server
-    pub idle_shutdown_after: usize,
+    pub idle_shutdown_after: u64,
     /// Command to use to start exec processes
     pub start_cmd: String,
 }

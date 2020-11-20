@@ -56,6 +56,8 @@ struct ServerState {
     running_exec_count: usize,
     /// Timestamp when the most recent task was received, or none if no task yet received
     last_submit_time: Option<SystemTime>,
+    /// Timestamp when last activity occured
+    last_activity_time: SystemTime,
     // User configuration parameters
     user_config: ExecConfig,
     // Exec process start command
@@ -64,8 +66,9 @@ struct ServerState {
 
 impl ServerState {
     fn new(port: ipc::CallMe) -> ServerState {
-        let mut config = load_config_file();
+        let config = load_config_file();
         let start_cmd = format!("{} exec --callme={} --code={}", config.start_cmd, port.addr, port.access_code);
+        println!("Generated start command: {}", &start_cmd);
 
         ServerState {
             remotes: vec![],
@@ -76,16 +79,39 @@ impl ServerState {
             pending_exec_count: 0,
             running_exec_count: 0,
             last_submit_time: None,
+            last_activity_time: SystemTime::now(),
             user_config: config,
             start_cmd: start_cmd,
         }
+    }
+
+    /// Resets the inactivity timer
+    fn activity_occurred(self: &mut ServerState) {
+        self.last_activity_time = SystemTime::now();
+    }
+
+    /// True if no tasks are queued and no activity has occurred within the shutdown period
+    fn ok_to_shutdown(self: &ServerState) -> bool {
+        return self.task_queue.is_empty()
+            && SystemTime::now()
+                .duration_since(self.last_activity_time)
+                .unwrap_or(ZERO_DURATION)
+                .as_secs()
+                > self.user_config.idle_shutdown_after;
     }
 
     /// Sends a message to the host paired with the given host. That is, given an exec host, send a message to the client
     /// which submitted the task or given a client and a message to the host executing the task.
     async fn send_to_paired_remote(self: &mut ServerState, conn_id: usize, msg: ipc::Message) -> Result<(), Box<dyn Error + Send + Sync>> {
         let other_id = self.remotes[conn_id].paired_id.expect("Expected connection to already be paired") as usize;
-        self.remotes[other_id].send_chan.send(msg).await.unwrap(); // TODO: Need to convert error types
+
+        // Forward to client, as long as it hasn't already been marked 'dead'
+        if self.remotes[other_id].conn_type == ConnectionType::Client {
+            if let Err(err) = self.remotes[other_id].send_chan.send(msg).await {
+                println!("Error sending to remote (was ctrl-c hit?): {}", err);
+                self.remotes[other_id].conn_type = ConnectionType::Dead;
+            }
+        }
         Ok(())
     }
 
@@ -127,8 +153,8 @@ impl ServerState {
     async fn remote_is_client(self: &mut ServerState, conn_id: usize, details: ipc::TaskDetails) -> Result<(), Box<dyn Error + Send + Sync>> {
         self.remotes[conn_id].conn_type = ConnectionType::Client;
         self.task_queue.push_back((conn_id, details));
-        self.start_execs().await;
-        self.check_queues().await
+        self.last_submit_time = Some(SystemTime::now());
+        self.update().await
     }
 
     /// A remote is identified after it sends its first message. In this case, the remote is an executor and is now
@@ -146,6 +172,11 @@ impl ServerState {
     async fn exec_is_ready(self: &mut ServerState, conn_id: usize) -> Result<(), Box<dyn Error + Send + Sync>> {
         self.exec_queue.push_back(conn_id);
         self.remotes[conn_id].paired_id = None;
+        self.update().await
+    }
+
+    /// Processes the queues and starts/shuts down exec processes
+    async fn update(self: &mut ServerState) -> Result<(), Box<dyn Error + Send + Sync>> {
         self.start_execs().await;
         self.check_queues().await
     }
@@ -177,17 +208,17 @@ impl ServerState {
             );
             exec.paired_id = Some(client_id as u32);
 
-            println!(
-                "Assigning task to exec {}: {}",
-                exec_id,
-                task.args.iter().fold(String::new(), |mut acc, s| {
-                    if !acc.is_empty() {
-                        acc.push_str(" ");
-                    }
-                    acc.push_str(s);
-                    acc
-                })
-            );
+            // println!(
+            //     "Assigning task to exec {}: {}",
+            //     exec_id,
+            //     task.args.iter().fold(String::new(), |mut acc, s| {
+            //         if !acc.is_empty() {
+            //             acc.push_str(" ");
+            //         }
+            //         acc.push_str(s);
+            //         acc
+            //     })
+            // );
 
             // Send the task
             exec.send_chan
@@ -199,15 +230,17 @@ impl ServerState {
         }
 
         // If no more task are coming, shut down idle executors
-        if let Some(last_task_time) = self.last_submit_time {
-            if SystemTime::now().duration_since(last_task_time).unwrap_or(ZERO_DURATION) > IDLE_SHUTDOWN_DELAY {
-                while !self.exec_queue.is_empty() {
-                    let exec_id = self.exec_queue.pop_front().unwrap();
-                    let exec = &mut self.remotes[exec_id];
-                    exec.conn_type = ConnectionType::Dead;
-                    exec.send_chan.send(ipc::Message::PissOff {}).await?;
-                }
-            }
+        let ok_to_release = if let Some(last_task_time) = self.last_submit_time {
+            SystemTime::now().duration_since(last_task_time).unwrap_or(ZERO_DURATION).as_secs() > self.user_config.release_delay
+        } else {
+            false
+        };
+
+        while ok_to_release && !self.exec_queue.is_empty() {
+            let exec_id = self.exec_queue.pop_front().unwrap();
+            let exec = &mut self.remotes[exec_id];
+            exec.conn_type = ConnectionType::Dead;
+            exec.send_chan.send(ipc::Message::PissOff {}).await?;
         }
 
         println!(
@@ -215,26 +248,28 @@ impl ServerState {
             self.finish_count,
             self.submit_count,
             self.submit_count - self.finish_count - self.task_queue.len(),
-            if self.last_submit_time.is_some() { " (all submitted)" } else { "" },
+            if ok_to_release { " (releasing execs)" } else { "" }
         );
         Ok(())
     }
 
     /// Check to see if we need to start more exec engines
     async fn start_execs(self: &mut ServerState) {
-        if !self.task_queue.is_empty() {
-            while self.pending_exec_count < self.user_config.keep_pending
-                && self.running_exec_count + self.pending_exec_count < self.user_config.max_count
-            {
-                match Command::new("sh").arg("-c").arg(&self.start_cmd).spawn() {
-                    Ok(_) => {
-                        self.pending_exec_count += 1;
-                        println!("Exec started");
-                        // Tokio does not do kill-on-drop by default, so we let the child run and hopefully finish quickly
-                    }
-                    Err(err) => {
-                        println!("Error starting exec process '{}': {}", &self.start_cmd, err);
-                    }
+        if self.task_queue.is_empty() {
+            return;
+        }
+        while self.running_exec_count + self.pending_exec_count < self.user_config.max_count
+            && self.pending_exec_count < self.user_config.keep_pending
+            || self.running_exec_count + self.pending_exec_count < self.user_config.initial_count
+        {
+            match Command::new("sh").arg("-c").arg(&self.start_cmd).spawn() {
+                Ok(_) => {
+                    self.pending_exec_count += 1;
+                    println!("Exec started");
+                    // Tokio does not do kill-on-drop by default, so we let the child run and hopefully finish quickly
+                }
+                Err(err) => {
+                    println!("Error starting exec process '{}': {}", &self.start_cmd, err);
                 }
             }
         }
@@ -256,8 +291,12 @@ pub async fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
 
     let (inbound_tx, mut inbound_rx) = mpsc::channel::<(usize, ipc::Message)>(256);
 
+    // Make sure we check on things even if no clients are communicating
+    let mut watchdog: tokio::time::Sleep;
+
     let mut server_state = ServerState::new(callme);
     loop {
+        watchdog = tokio::time::sleep(Duration::from_secs(5));
         tokio::select! {
             socket_res = listener.accept() => {
                 let (socket, _) = socket_res.expect("Error accepting incoming connection");
@@ -282,7 +321,15 @@ pub async fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
                     Some((id, msg)) => handle_msg(&mut server_state, id, msg).await?,
                     None => break,
                 }
+                server_state.activity_occurred();
             }
+            _ = &mut watchdog => {
+                server_state.update().await?
+            }
+        }
+
+        if server_state.ok_to_shutdown() {
+            break;
         }
     }
     Ok(())

@@ -55,7 +55,7 @@ pub async fn run(callme: ipc::CallMe) -> Result<(), Box<dyn Error + Send + Sync>
 }
 
 async fn handle_new_task(conn: &mut ipc::Connection, details: ipc::TaskDetails) -> Result<(), Box<dyn Error + Send + Sync>> {
-    println!("Got task {:?}", details);
+    // println!("Got task {:?}", details);
     match Task::start(&details.working_dir, &details.cmd, details.args, &details.output_args) {
         Ok(task) => run_task(conn, task).await,
         Err(err) => {
@@ -78,7 +78,7 @@ async fn run_task(conn: &mut ipc::Connection, mut task: Task) -> Result<(), Box<
                 if let Ok(None) = line_res {
                     stdout_done = true;
                 } else if let Ok(Some(mut line)) = line_res {
-                    println!("Got stdout: {}", &line);
+                    // println!("Got stdout: {}", &line);
                     line.push('\n');
                     conn.write_message(&ipc::Message::TaskOutput { output_type : ipc::OutputType::Stdout, content : Vec::from(line) }).await?;
 
@@ -104,13 +104,13 @@ async fn run_task(conn: &mut ipc::Connection, mut task: Task) -> Result<(), Box<
     // Child should have exited if stdout and stderr are closed
     let status = task.child.wait().await?;
 
-    println!("Sending {} output files", task.output_files.len());
+    // println!("Sending {} output files", task.output_files.len());
     for (idx, generated_file) in task.output_files.iter().enumerate() {
         send_output_file(conn, ipc::OutputType::File(idx), &generated_file).await?;
     }
 
     conn.write_message(&ipc::Message::TaskDone { exit_code: status.code() }).await?;
-    println!("Status = {:?}", status);
+    // println!("Status = {:?}", status);
     Ok(())
 }
 
@@ -119,7 +119,7 @@ async fn send_output_file(conn: &mut ipc::Connection, output_type: ipc::OutputTy
     // Ignore file open errors, these are typically due to compiler errors. No output is sent, which indicates the file should not
     // be created on the other end.
     if let Ok(mut fs) = tokio::fs::OpenOptions::new().read(true).open(path.as_os_str()).await {
-        println!("Sending output file {}", path.to_string_lossy());
+        // println!("Sending output file {}", path.to_string_lossy());
         loop {
             let mut buf: Vec<u8> = vec![0; 65536];
             let n = fs.read(buf.as_mut_slice()).await?;
