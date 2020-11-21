@@ -1,12 +1,79 @@
+extern crate home;
 extern crate toml;
 
+use super::ipc;
+use serde::Deserialize;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Result, Write};
 use std::path::{Path, PathBuf};
 
-use super::ipc;
-
 const CONNECT_FILE: &str = ".spraycc-server";
+
+#[derive(Deserialize, Debug)]
+struct ConfigWrapper {
+    exec: ExecConfig,
+    command: std::collections::HashMap<String, toml::map::Map<String, toml::Value>>,
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct CmdConfig {
+    command: Vec<String>,
+    output_files: Option<Vec<String>>,
+}
+#[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+#[serde(default)]
+pub struct ExecConfig {
+    /// Number of execs to start immediately
+    pub initial_count: usize,
+    /// Maximum number of execs to start if there are enough tasks
+    pub max_count: usize,
+    /// Number of exec's pending as count climbs towards max
+    pub keep_pending: usize,
+    /// Idle delay when no more task have arrived to start releasing idle exec's
+    pub release_delay: u64,
+    /// Idle delay when no tasks are running or arriving to shutdown server
+    pub idle_shutdown_after: u64,
+    /// Command to use to start exec processes
+    pub start_cmd: String,
+}
+
+impl Default for ExecConfig {
+    fn default() -> Self {
+        ExecConfig {
+            initial_count: 5,
+            max_count: 1000,
+            keep_pending: 5,
+            release_delay: 30,
+            idle_shutdown_after: 60,
+            start_cmd: "spraycc".to_string(), // TODO: lookup up path to this process
+        }
+    }
+}
+
+/// Reads a configuration file and returns the config object
+pub fn load_config_file() -> ExecConfig {
+    if let Ok(config) = load_config_file_internal(&PathBuf::from(".spraycc")) {
+        return config;
+    } else if let Some(mut home_dir) = home::home_dir() {
+        home_dir.push(".spraycc");
+        if let Ok(config) = load_config_file_internal(&home_dir) {
+            return config;
+        }
+    }
+    ExecConfig::default()
+}
+
+fn load_config_file_internal(path: &PathBuf) -> Result<ExecConfig> {
+    let mut f = OpenOptions::new().read(true).open(&path)?;
+    let mut buf = String::new();
+    f.read_to_string(&mut buf)?;
+
+    let config: ConfigWrapper = toml::from_str(&buf)?;
+    println!("Read config file from {}", path.to_string_lossy());
+    Ok(config.exec)
+}
 
 /// Write a configuration file describing the post and port the server is listening on and
 /// the access code a client process should use.

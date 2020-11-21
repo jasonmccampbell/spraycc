@@ -109,7 +109,7 @@ fn generate_unique_file(output_dir: &TempDir, taken_names: &mut HashSet<String>,
 
 /// Starts a task in the specified directory and retuns the child process object.
 fn start_task(dir: &Path, cmd: &Path, args: &[String]) -> process::Child {
-    println!("Starting task {:?} in dir {:?}, args={:?}", cmd, dir, args);
+    // println!("Starting task {:?} in dir {:?}, args={:?}", cmd, dir, args);
     process::Command::new(cmd)
         .args(args[1..].iter())
         .current_dir(dir)
