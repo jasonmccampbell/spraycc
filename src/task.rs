@@ -8,9 +8,7 @@ use tempdir::TempDir;
 use tokio::process;
 
 #[cfg(test)]
-use std::fs::OpenOptions;
-#[cfg(test)]
-use std::io::Read;
+use tokio::io::AsyncReadExt;
 
 /// Describes a started task, including the process and the files it generates.
 #[derive(Debug)]
@@ -127,11 +125,12 @@ fn hostname() -> String {
 }
 
 /// Can we start a basic task and read the output?  *nix only
-#[test]
+#[cfg(test)]
+#[tokio::test]
 #[cfg(not(windows))]
-fn task_start_task() {
+async fn task_start_task() {
     let mut child = start_task(Path::new("."), Path::new("echo"), &vec![String::from("echo"), String::from("Hi mom")]);
-    match child.wait() {
+    match child.wait().await {
         Ok(status) if status.success() => {
             println!("Echo ran correctly");
         }
@@ -149,13 +148,10 @@ fn task_start_task() {
         }
     }
 
-    if let Some(mut stdout) = child.stdout {
-        let mut buf = [0; 1024];
-        let n = stdout.read(&mut buf[..]).unwrap();
-        assert_eq!(String::from_utf8_lossy(&buf[0..n]), "Hi mom\n");
-    } else {
-        panic!("Unable to read stdout from echo");
-    }
+    let mut stdout = child.stdout.expect("Unable to read stdout from echo");
+    let mut buf = [0; 1024];
+    let n = stdout.read(&mut buf[..]).await.unwrap();
+    assert_eq!(String::from_utf8_lossy(&buf[0..n]), "Hi mom\n");
 }
 
 /// Check that file names are actually unique
