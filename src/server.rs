@@ -15,8 +15,6 @@ use tokio::sync::mpsc;
 use super::config::{load_config_file, write_server_contact_info, ExecConfig};
 use super::ipc;
 
-/// Delay from receiving 'all tasks submitted' to actually shutting down execs to allow for late arrivals
-const IDLE_SHUTDOWN_DELAY: Duration = Duration::from_secs(5);
 const ZERO_DURATION: Duration = Duration::from_secs(0);
 
 #[derive(Debug, PartialEq)]
