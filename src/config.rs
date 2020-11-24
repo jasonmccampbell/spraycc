@@ -12,7 +12,7 @@ const CONNECT_FILE: &str = ".spraycc-server";
 #[derive(Deserialize, Debug)]
 struct ConfigWrapper {
     exec: ExecConfig,
-    command: std::collections::HashMap<String, toml::map::Map<String, toml::Value>>,
+    command: Option<std::collections::HashMap<String, toml::map::Map<String, toml::Value>>>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -66,6 +66,17 @@ pub fn load_config_file() -> ExecConfig {
 }
 
 fn load_config_file_internal(path: &PathBuf) -> Result<ExecConfig> {
+    match read_config_file(path) {
+        Ok(config) => Ok(config),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Err(err),
+        Err(err) => {
+            println!("Error reading configuration file {}:\n   {}", path.to_string_lossy(), err);
+            Err(err)
+        }
+    }
+}
+
+fn read_config_file(path: &PathBuf) -> Result<ExecConfig> {
     let mut f = OpenOptions::new().read(true).open(&path)?;
     let mut buf = String::new();
     f.read_to_string(&mut buf)?;
