@@ -104,6 +104,7 @@ pub async fn run(args: Vec<String>) -> Result<i32, Box<dyn Error + Send + Sync>>
                     "Unable to connect to server at {}, please make sure it was started with 'spraycc server': {}",
                     callme.addr, err
                 );
+                status = Some(-1);
             }
         }
     } else {
@@ -192,7 +193,6 @@ fn interpret_command_line(args: Vec<String>) -> Result<(bool, ipc::TaskDetails),
     match which::which(OsString::from(&args[0])) {
         Ok(cmd) => {
             let cmd_name = cmd.file_name().map(|s| s.to_string_lossy()).unwrap(); // Can this fail if path exists?
-                                                                                  // println!("Got file name: {}", cmd_name);
 
             let (keep_local, output_args) = {
                 if cmd_name == "gcc" || cmd_name == "g++" || cmd_name == "clang" {
@@ -200,7 +200,7 @@ fn interpret_command_line(args: Vec<String>) -> Result<(bool, ipc::TaskDetails),
                 } else if cmd_name == "echo" || cmd_name == "ls" {
                     (false, Vec::new())
                 } else {
-                    return Err(String::from("Not implemented"));
+                    (false, Vec::new())
                 }
             };
 

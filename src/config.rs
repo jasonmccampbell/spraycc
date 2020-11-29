@@ -12,7 +12,7 @@ const CONNECT_FILE: &str = ".spraycc-server";
 #[derive(Deserialize, Debug)]
 struct ConfigWrapper {
     exec: ExecConfig,
-    command: std::collections::HashMap<String, toml::map::Map<String, toml::Value>>,
+    command: Option<std::collections::HashMap<String, toml::map::Map<String, toml::Value>>>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -52,6 +52,23 @@ impl Default for ExecConfig {
     }
 }
 
+/// Only exists to clean up the server configuration file at exit
+pub struct ServerConfigCleanup {
+    file: PathBuf,
+}
+
+impl ServerConfigCleanup {
+    fn new(file_to_delete: PathBuf) -> ServerConfigCleanup {
+        ServerConfigCleanup { file: file_to_delete }
+    }
+}
+
+impl Drop for ServerConfigCleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.file);
+    }
+}
+
 /// Reads a configuration file and returns the config object
 pub fn load_config_file() -> ExecConfig {
     if let Ok(config) = load_config_file_internal(&PathBuf::from(".spraycc")) {
@@ -66,6 +83,17 @@ pub fn load_config_file() -> ExecConfig {
 }
 
 fn load_config_file_internal(path: &PathBuf) -> Result<ExecConfig> {
+    match read_config_file(path) {
+        Ok(config) => Ok(config),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Err(err),
+        Err(err) => {
+            println!("Error reading configuration file {}:\n   {}", path.to_string_lossy(), err);
+            Err(err)
+        }
+    }
+}
+
+fn read_config_file(path: &PathBuf) -> Result<ExecConfig> {
     let mut f = OpenOptions::new().read(true).open(&path)?;
     let mut buf = String::new();
     f.read_to_string(&mut buf)?;
@@ -77,10 +105,11 @@ fn load_config_file_internal(path: &PathBuf) -> Result<ExecConfig> {
 
 /// Write a configuration file describing the post and port the server is listening on and
 /// the access code a client process should use.
-pub fn write_server_contact_info(callme: &ipc::CallMe) -> Result<()> {
+pub fn write_server_contact_info(callme: &ipc::CallMe) -> Result<ServerConfigCleanup> {
     let mut f = OpenOptions::new().create(true).write(true).open(CONNECT_FILE)?;
     let config = toml::to_string(callme).unwrap();
-    f.write_all(config.as_bytes())
+    f.write_all(config.as_bytes())?;
+    Ok(ServerConfigCleanup::new(PathBuf::from(CONNECT_FILE)))
 }
 
 /// Read a server configuration from the file system
@@ -133,12 +162,12 @@ fn config_read_write_callme() {
         access_code: 6789,
     };
 
-    write_server_contact_info(&config).unwrap();
-    let c2 = read_server_contact_info().unwrap();
-    assert_eq!(c2.addr, config.addr);
-    assert_eq!(c2.access_code, config.access_code);
-
-    std::fs::remove_file(CONNECT_FILE).unwrap();
+    {
+        let remover = write_server_contact_info(&config).unwrap();
+        let c2 = read_server_contact_info().unwrap();
+        assert_eq!(c2.addr, config.addr);
+        assert_eq!(c2.access_code, config.access_code);
+    }
 
     assert!(read_server_contact_info().is_none());
 }

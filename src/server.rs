@@ -1,4 +1,5 @@
 extern crate get_if_addrs;
+extern crate simple_process_stats;
 extern crate tokio;
 
 // Setup some tokens to allow us to identify which event is
@@ -126,8 +127,8 @@ impl ServerState {
     /// A connection was dropped, perhaps expectedly, perhaps not.
     async fn handle_dropped(self: &mut ServerState, conn_id: usize) -> Result<(), Box<dyn Error + Send + Sync>> {
         let remote = &self.remotes[conn_id];
-        if let Some(other_id) = remote.paired_id {
-            if remote.conn_type == ConnectionType::Exec {
+        if remote.conn_type == ConnectionType::Exec {
+            if let Some(other_id) = remote.paired_id {
                 // Notify the client that something bad has happened...
                 self.remotes[other_id as usize]
                     .send_chan
@@ -239,14 +240,15 @@ impl ServerState {
             let exec = &mut self.remotes[exec_id];
             exec.conn_type = ConnectionType::Dead;
             exec.send_chan.send(ipc::Message::PissOff {}).await?;
+            self.running_exec_count -= 1;
         }
 
         println!(
-            "Status: {} / {} finished, {} running{}",
+            "Status: {} / {} finished, {} running, {} executors",
             self.finish_count,
             self.submit_count,
             self.submit_count - self.finish_count - self.task_queue.len(),
-            if ok_to_release { " (releasing execs)" } else { "" }
+            self.running_exec_count
         );
         Ok(())
     }
@@ -256,9 +258,10 @@ impl ServerState {
         if self.task_queue.is_empty() {
             return;
         }
-        while self.running_exec_count + self.pending_exec_count < self.user_config.max_count
-            && self.pending_exec_count < self.user_config.keep_pending
-            || self.running_exec_count + self.pending_exec_count < self.user_config.initial_count
+        while self.running_exec_count + self.pending_exec_count < self.task_queue.len()
+            && (self.running_exec_count + self.pending_exec_count < self.user_config.max_count
+                && self.pending_exec_count < self.user_config.keep_pending
+                || self.running_exec_count + self.pending_exec_count < self.user_config.initial_count)
         {
             match Command::new("sh").arg("-c").arg(&self.start_cmd).spawn() {
                 Ok(_) => {
@@ -282,7 +285,7 @@ pub async fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
         addr: SocketAddr::new(ip_addr, 45678),
         access_code: 42,
     };
-    write_server_contact_info(&callme)?;
+    let cleaner = write_server_contact_info(&callme)?;
 
     let listener = TcpListener::bind(&callme.addr).await?;
     println!("Server started on {}", listener.local_addr().unwrap());
@@ -330,6 +333,9 @@ pub async fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
             break;
         }
     }
+
+    let stats = simple_process_stats::ProcessStats::get().await?;
+    println!("Server: shutdown, {} CPU seconds", stats.cpu_time_user.as_secs());
     Ok(())
 }
 
