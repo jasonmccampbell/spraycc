@@ -13,6 +13,7 @@ get_if_addrs = "0.5"
 gethostname = "0"
 home = "0.5"
 serde = { version = "1", features = ["derive"] }
+simple-process-stats = "0.2"
 tempdir = "0.3"
 # TODO: Reduce feature set
 tokio = { version = "0.3", features = ["full"] }
