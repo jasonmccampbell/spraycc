@@ -162,12 +162,12 @@ fn config_read_write_callme() {
         access_code: 6789,
     };
 
-    write_server_contact_info(&config).unwrap();
-    let c2 = read_server_contact_info().unwrap();
-    assert_eq!(c2.addr, config.addr);
-    assert_eq!(c2.access_code, config.access_code);
-
-    std::fs::remove_file(CONNECT_FILE).unwrap();
+    {
+        let remover = write_server_contact_info(&config).unwrap();
+        let c2 = read_server_contact_info().unwrap();
+        assert_eq!(c2.addr, config.addr);
+        assert_eq!(c2.access_code, config.access_code);
+    }
 
     assert!(read_server_contact_info().is_none());
 }
