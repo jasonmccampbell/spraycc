@@ -52,6 +52,23 @@ impl Default for ExecConfig {
     }
 }
 
+/// Only exists to clean up the server configuration file at exit
+pub struct ServerConfigCleanup {
+    file: PathBuf,
+}
+
+impl ServerConfigCleanup {
+    fn new(file_to_delete: PathBuf) -> ServerConfigCleanup {
+        ServerConfigCleanup { file: file_to_delete }
+    }
+}
+
+impl Drop for ServerConfigCleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.file);
+    }
+}
+
 /// Reads a configuration file and returns the config object
 pub fn load_config_file() -> ExecConfig {
     if let Ok(config) = load_config_file_internal(&PathBuf::from(".spraycc")) {
@@ -88,10 +105,11 @@ fn read_config_file(path: &PathBuf) -> Result<ExecConfig> {
 
 /// Write a configuration file describing the post and port the server is listening on and
 /// the access code a client process should use.
-pub fn write_server_contact_info(callme: &ipc::CallMe) -> Result<()> {
+pub fn write_server_contact_info(callme: &ipc::CallMe) -> Result<ServerConfigCleanup> {
     let mut f = OpenOptions::new().create(true).write(true).open(CONNECT_FILE)?;
     let config = toml::to_string(callme).unwrap();
-    f.write_all(config.as_bytes())
+    f.write_all(config.as_bytes())?;
+    Ok(ServerConfigCleanup::new(PathBuf::from(CONNECT_FILE)))
 }
 
 /// Read a server configuration from the file system
