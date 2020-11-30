@@ -285,7 +285,7 @@ pub async fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
         addr: SocketAddr::new(ip_addr, 45678),
         access_code: 42,
     };
-    let cleaner = write_server_contact_info(&callme)?;
+    let _cleaner = write_server_contact_info(&callme)?;
 
     let listener = TcpListener::bind(&callme.addr).await?;
     println!("Server started on {}", listener.local_addr().unwrap());

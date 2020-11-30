@@ -597,6 +597,7 @@ dependencies = [
  "get_if_addrs",
  "gethostname",
  "home",
+ "lazy_static",
  "serde",
  "simple-process-stats",
  "tempdir",

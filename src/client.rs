@@ -3,9 +3,11 @@
 /// submits the compilation command line to the server and waits around until the
 /// results are available.
 ///
+extern crate lazy_static;
 extern crate tokio;
 extern crate which;
 
+use lazy_static::lazy_static;
 use std::error::Error;
 use std::ffi::OsString;
 use tokio::io::AsyncWriteExt;
@@ -14,6 +16,10 @@ use tokio::process;
 
 use super::config;
 use super::ipc;
+
+lazy_static! {
+    static ref EXCLUDED_ENV_VARS: std::collections::HashSet<&'static str> = ["PWD", "USERNAME", "USER"].iter().cloned().collect();
+}
 
 /// A lazy file opener
 enum LazyFile {
@@ -204,6 +210,8 @@ fn interpret_command_line(args: Vec<String>) -> Result<(bool, ipc::TaskDetails),
                 }
             };
 
+            let env = std::env::vars().filter(|v| !EXCLUDED_ENV_VARS.contains(v.0.as_str())).collect();
+
             if let Ok(cwd) = std::env::current_dir() {
                 Ok((
                     keep_local,
@@ -212,6 +220,7 @@ fn interpret_command_line(args: Vec<String>) -> Result<(bool, ipc::TaskDetails),
                         cmd,
                         args,
                         output_args,
+                        env,
                     },
                 ))
             } else {

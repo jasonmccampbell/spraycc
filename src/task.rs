@@ -1,7 +1,7 @@
 extern crate gethostname;
 extern crate tempdir;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use tempdir::TempDir;
@@ -35,8 +35,9 @@ impl Task {
     /// * `cmd` - Absolute or relative path to the executable to run; relative to `cwd`
     /// * `args` - Zero or more command line arguments to pass to `cmd`; do not include the executable name
     /// * `output_args` - Zero or indexes into `args` indicating the argument is the name of an output
+    /// * `env` - Map of zero or more environment variables to be set prior to executing the command
     ///   file to be generated
-    pub fn start(cwd: &Path, cmd: &Path, mut args: Vec<String>, output_args: &[u16]) -> Result<Task, String> {
+    pub fn start(cwd: &Path, cmd: &Path, mut args: Vec<String>, output_args: &[u16], env: &HashMap<String, String>) -> Result<Task, String> {
         if !cwd.exists() {
             Err(format!(
                 "Execution directory {} does not exist on host {}",
@@ -47,7 +48,7 @@ impl Task {
             Err(format!("Command {} does not exist on host {}", cmd.to_string_lossy(), hostname()))
         } else {
             let (pipe_dir, output_files) = redirect_outputs(&mut args, output_args)?;
-            let child = start_task(cwd, cmd, &args);
+            let child = start_task(cwd, cmd, &args, env);
             Ok(Task {
                 child,
                 output_files,
@@ -106,10 +107,10 @@ fn generate_unique_file(output_dir: &TempDir, taken_names: &mut HashSet<String>,
 }
 
 /// Starts a task in the specified directory and retuns the child process object.
-fn start_task(dir: &Path, cmd: &Path, args: &[String]) -> process::Child {
-    // println!("Starting task {:?} in dir {:?}, args={:?}", cmd, dir, args);
+fn start_task(dir: &Path, cmd: &Path, args: &[String], env: &HashMap<String, String>) -> process::Child {
     process::Command::new(cmd)
         .args(args[1..].iter())
+        .envs(env)
         .current_dir(dir)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
