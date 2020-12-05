@@ -92,6 +92,7 @@ impl ServerState {
     /// True if no tasks are queued and no activity has occurred within the shutdown period
     fn ok_to_shutdown(self: &ServerState) -> bool {
         return self.task_queue.is_empty()
+            && self.running_exec_count == 0
             && SystemTime::now()
                 .duration_since(self.last_activity_time)
                 .unwrap_or(ZERO_DURATION)
@@ -285,7 +286,7 @@ pub async fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
         addr: SocketAddr::new(ip_addr, 45678),
         access_code: 42,
     };
-    let cleaner = write_server_contact_info(&callme)?;
+    let _cleaner = write_server_contact_info(&callme)?;
 
     let listener = TcpListener::bind(&callme.addr).await?;
     println!("Server started on {}", listener.local_addr().unwrap());

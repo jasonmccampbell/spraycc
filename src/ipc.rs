@@ -4,6 +4,7 @@ extern crate bytes;
 use byteorder::{BigEndian, ByteOrder};
 use bytes::{Buf, BytesMut};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fmt;
 use std::path::PathBuf;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -57,6 +58,8 @@ pub struct TaskDetails {
     pub args: Vec<String>,
     /// Indices into 'args' which are output file names to be captured and relayed back to the originating host
     pub output_args: Vec<u16>,
+    /// Environment variables to be propagated to the execution host
+    pub env: HashMap<String, String>,
 }
 
 /// Messages sent between Spraycc processes.

@@ -12,6 +12,7 @@ clap = "2"
 get_if_addrs = "0.5"
 gethostname = "0"
 home = "0.5"
+lazy_static = "1"
 serde = { version = "1", features = ["derive"] }
 simple-process-stats = "0.2"
 tempdir = "0.3"
