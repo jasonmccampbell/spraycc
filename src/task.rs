@@ -130,7 +130,14 @@ fn hostname() -> String {
 #[tokio::test]
 #[cfg(not(windows))]
 async fn task_start_task() {
-    let mut child = start_task(Path::new("."), Path::new("echo"), &vec![String::from("echo"), String::from("Hi mom")]);
+    let mut env = HashMap::<String, String>::new();
+    env.insert(String::from("PERSON"), String::from("Mom"));
+    let mut child = start_task(
+        Path::new("."),
+        Path::new("sh"),
+        &vec![String::from("sh"), String::from("-c"), String::from("echo \"Hi ${PERSON}\"")],
+        &env,
+    );
     match child.wait().await {
         Ok(status) if status.success() => {
             println!("Echo ran correctly");
@@ -152,7 +159,7 @@ async fn task_start_task() {
     let mut stdout = child.stdout.expect("Unable to read stdout from echo");
     let mut buf = [0; 1024];
     let n = stdout.read(&mut buf[..]).await.unwrap();
-    assert_eq!(String::from_utf8_lossy(&buf[0..n]), "Hi mom\n");
+    assert_eq!(String::from_utf8_lossy(&buf[0..n]), "Hi Mom\n");
 }
 
 /// Check that file names are actually unique

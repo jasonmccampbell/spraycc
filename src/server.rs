@@ -92,6 +92,7 @@ impl ServerState {
     /// True if no tasks are queued and no activity has occurred within the shutdown period
     fn ok_to_shutdown(self: &ServerState) -> bool {
         return self.task_queue.is_empty()
+            && self.running_exec_count == 0
             && SystemTime::now()
                 .duration_since(self.last_activity_time)
                 .unwrap_or(ZERO_DURATION)
