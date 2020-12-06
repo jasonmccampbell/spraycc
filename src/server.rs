@@ -33,7 +33,7 @@ enum ConnectionType {
 struct Remote {
     conn_type: ConnectionType,
     // Channel for sending message to the remote task
-    send_chan: mpsc::Sender<ipc::Message>,
+    send_chan: mpsc::Sender<Box<ipc::Message>>,
     // Paired remote ID. For client type, this is the executor ID which is running the task, or None if
     // not assigned yet. For executors, it is the ID of the client which submitted the task, or None.
     paired_id: Option<u32>,
@@ -99,7 +99,7 @@ impl ServerState {
             last_submit_time: None,
             last_activity_time: SystemTime::now(),
             user_config: config,
-            start_cmd: start_cmd,
+            start_cmd,
             total_bytes: 0.bytes(),
             bytes_this_period: 0.bytes(),
         }
@@ -123,7 +123,7 @@ impl ServerState {
 
     /// Sends a message to the host paired with the given host. That is, given an exec host, send a message to the client
     /// which submitted the task or given a client and a message to the host executing the task.
-    async fn send_to_paired_remote(self: &mut ServerState, conn_id: usize, msg: ipc::Message) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn send_to_paired_remote(self: &mut ServerState, conn_id: usize, msg: Box<ipc::Message>) -> Result<(), Box<dyn Error + Send + Sync>> {
         let other_id = self.remotes[conn_id].paired_id.expect("Expected connection to already be paired") as usize;
 
         // Forward to client, as long as it hasn't already been marked 'dead'
@@ -137,7 +137,7 @@ impl ServerState {
     }
 
     /// Adds a new remote which has connected to the server
-    fn add_remote(self: &mut ServerState, tx: mpsc::Sender<ipc::Message>) -> usize {
+    fn add_remote(self: &mut ServerState, tx: mpsc::Sender<Box<ipc::Message>>) -> usize {
         self.remotes.push(Remote {
             conn_type: ConnectionType::Pending,
             send_chan: tx,
@@ -154,9 +154,9 @@ impl ServerState {
                 // Notify the client that something bad has happened...
                 self.remotes[other_id as usize]
                     .send_chan
-                    .send(ipc::Message::TaskFailed {
+                    .send(Box::new(ipc::Message::TaskFailed {
                         error_message: String::from("exec dropped connection"),
-                    })
+                    }))
                     .await?;
             }
         }
@@ -243,10 +243,10 @@ impl ServerState {
 
             // Send the task
             exec.send_chan
-                .send(ipc::Message::Task {
+                .send(Box::new(ipc::Message::Task {
                     access_code: 0,
                     details: task,
-                })
+                }))
                 .await?;
         }
 
@@ -261,7 +261,7 @@ impl ServerState {
             let exec_id = self.exec_queue.pop_front().unwrap();
             let exec = &mut self.remotes[exec_id];
             exec.conn_type = ConnectionType::Dead;
-            exec.send_chan.send(ipc::Message::PissOff {}).await?;
+            exec.send_chan.send(Box::new(ipc::Message::PissOff {})).await?;
             self.running_exec_count -= 1;
         }
         Ok(())
@@ -315,7 +315,7 @@ pub async fn run(max_cpus: Option<usize>, alt_start_cmd: bool) -> Result<(), Box
     let listener = TcpListener::bind(&callme.addr).await?;
     println!("Server started on {}", listener.local_addr().unwrap());
 
-    let (inbound_tx, mut inbound_rx) = mpsc::channel::<(usize, ipc::Message)>(256);
+    let (inbound_tx, mut inbound_rx) = mpsc::channel::<(usize, Box<ipc::Message>)>(256);
 
     // Make sure we check on things even if no clients are communicating
     let mut watchdog = tokio::time::sleep(Duration::from_secs(5));
@@ -328,7 +328,7 @@ pub async fn run(max_cpus: Option<usize>, alt_start_cmd: bool) -> Result<(), Box
                 let (socket, _) = socket_res.expect("Error accepting incoming connection");
                 // A new task is spawned for each inbound socket. The socket is
                 // moved to the new task and processed there.
-                let (outbound_tx, outbound_rx) = mpsc::channel::<ipc::Message>(256);
+                let (outbound_tx, outbound_rx) = mpsc::channel::<Box<ipc::Message>>(256);
                 let remote_id = server_state.add_remote(outbound_tx);
                 let in_tx = inbound_tx.clone();
                 tokio::spawn(async move {
@@ -375,15 +375,15 @@ pub async fn run(max_cpus: Option<usize>, alt_start_cmd: bool) -> Result<(), Box
 async fn handle_connection(
     stream: TcpStream,
     conn_id: usize,
-    tx_chan: mpsc::Sender<(usize, ipc::Message)>,
-    mut rx_chan: mpsc::Receiver<ipc::Message>,
+    tx_chan: mpsc::Sender<(usize, Box<ipc::Message>)>,
+    mut rx_chan: mpsc::Receiver<Box<ipc::Message>>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     let mut conn = ipc::Connection::new(stream);
     loop {
         tokio::select! {
             res = conn.read_message() => {
                 match res {
-                    Ok(Some(msg)) => tx_chan.send((conn_id, msg)).await?,
+                    Ok(Some(msg)) => tx_chan.send((conn_id, Box::new(msg))).await?,
                     Ok(None) => {
                         break;
                     }
@@ -402,18 +402,21 @@ async fn handle_connection(
             }
         }
     }
-    tx_chan.send((conn_id, ipc::Message::Dropped)).await?;
+    tx_chan.send((conn_id, Box::new(ipc::Message::Dropped))).await?;
     Ok(())
 }
 
 /// On the main server thread, handle a message from either a client or exec remote. Often this involves
 /// forwarding a message to another remote.
-async fn handle_msg(server_state: &mut ServerState, conn_id: usize, msg: ipc::Message) -> Result<(), Box<dyn Error + Send + Sync>> {
-    match msg {
-        ipc::Message::YourObedientServant { access_code } => {
+async fn handle_msg(server_state: &mut ServerState, conn_id: usize, msg: Box<ipc::Message>) -> Result<(), Box<dyn Error + Send + Sync>> {
+    match *msg {
+        ipc::Message::YourObedientServant { access_code: _access_code } => {
             server_state.remote_is_exec(conn_id).await?;
         }
-        ipc::Message::Task { access_code, details } => {
+        ipc::Message::Task {
+            access_code: _access_code,
+            details,
+        } => {
             server_state.submit_count += 1;
             server_state.remote_is_client(conn_id, details).await?;
         }
@@ -422,7 +425,7 @@ async fn handle_msg(server_state: &mut ServerState, conn_id: usize, msg: ipc::Me
             server_state.total_bytes += size;
             server_state.bytes_this_period += size;
             server_state
-                .send_to_paired_remote(conn_id, ipc::Message::TaskOutput { output_type, content })
+                .send_to_paired_remote(conn_id, Box::new(ipc::Message::TaskOutput { output_type, content }))
                 .await?;
         }
         ipc::Message::TaskDone { .. } => {
