@@ -1,6 +1,7 @@
 extern crate get_if_addrs;
 extern crate simple_process_stats;
 extern crate tokio;
+extern crate ubyte;
 
 // Setup some tokens to allow us to identify which event is
 // for which socket.
@@ -12,6 +13,7 @@ use std::time::{Duration, SystemTime};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::process::Command;
 use tokio::sync::mpsc;
+use ubyte::{ByteUnit, ToByteUnit};
 
 use super::config::{load_config_file, write_server_contact_info, ExecConfig};
 use super::ipc;
@@ -57,16 +59,33 @@ struct ServerState {
     last_submit_time: Option<SystemTime>,
     /// Timestamp when last activity occured
     last_activity_time: SystemTime,
-    // User configuration parameters
+    /// User configuration parameters
     user_config: ExecConfig,
-    // Exec process start command
+    /// Exec process start command
     start_cmd: String,
+
+    // Metrics
+    /// Total bytes of files (TaskOutput) messages returned
+    total_bytes: ByteUnit,
+    /// Bytes returned during this sampling period
+    bytes_this_period: ByteUnit,
 }
 
 impl ServerState {
-    fn new(port: ipc::CallMe) -> ServerState {
-        let config = load_config_file();
-        let start_cmd = format!("{} exec --callme={} --code={}", config.start_cmd, port.addr, port.access_code);
+    fn new(port: ipc::CallMe, max_cpus: Option<usize>, alt_start_cmd: bool) -> ServerState {
+        let mut config = load_config_file();
+
+        if let Some(c) = max_cpus {
+            config.max_count = c;
+        }
+
+        let cmd: &str = if alt_start_cmd && config.alt_start_cmd.is_some() {
+            config.alt_start_cmd.as_ref().unwrap()
+        } else {
+            &config.start_cmd
+        };
+        let start_cmd = format!("{} exec --callme={} --code={}", &cmd, port.addr, port.access_code);
+
         println!("Generated start command: {}", &start_cmd);
 
         ServerState {
@@ -81,6 +100,8 @@ impl ServerState {
             last_activity_time: SystemTime::now(),
             user_config: config,
             start_cmd: start_cmd,
+            total_bytes: 0.bytes(),
+            bytes_this_period: 0.bytes(),
         }
     }
 
@@ -243,15 +264,18 @@ impl ServerState {
             exec.send_chan.send(ipc::Message::PissOff {}).await?;
             self.running_exec_count -= 1;
         }
+        Ok(())
+    }
 
+    fn report_status(self: &ServerState, reporting_period: u64) {
         println!(
-            "Status: {} / {} finished, {} running, {} executors",
+            "Status: {} / {} finished, {} running, {} executors, {} / sec",
             self.finish_count,
             self.submit_count,
             self.submit_count - self.finish_count - self.task_queue.len(),
-            self.running_exec_count
+            self.running_exec_count,
+            self.bytes_this_period / reporting_period
         );
-        Ok(())
     }
 
     /// Check to see if we need to start more exec engines
@@ -280,7 +304,7 @@ impl ServerState {
 
 /// Main server loop. This starts a socket listener to wait for remote connections. Each connection
 /// is spun off as a separate task, which relays backs back over an MPSC.
-pub async fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
+pub async fn run(max_cpus: Option<usize>, alt_start_cmd: bool) -> Result<(), Box<dyn Error + Send + Sync>> {
     let ip_addr = get_network_addr();
     let callme = ipc::CallMe {
         addr: SocketAddr::new(ip_addr, 45678),
@@ -294,11 +318,11 @@ pub async fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
     let (inbound_tx, mut inbound_rx) = mpsc::channel::<(usize, ipc::Message)>(256);
 
     // Make sure we check on things even if no clients are communicating
-    let mut watchdog: tokio::time::Sleep;
+    let mut watchdog = tokio::time::sleep(Duration::from_secs(5));
 
-    let mut server_state = ServerState::new(callme);
+    // Server state includes the user configuration from .spraycc, plus overrides
+    let mut server_state = ServerState::new(callme, max_cpus, alt_start_cmd);
     loop {
-        watchdog = tokio::time::sleep(Duration::from_secs(5));
         tokio::select! {
             socket_res = listener.accept() => {
                 let (socket, _) = socket_res.expect("Error accepting incoming connection");
@@ -326,7 +350,10 @@ pub async fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
                 server_state.activity_occurred();
             }
             _ = &mut watchdog => {
-                server_state.update().await?
+                server_state.update().await?;
+                server_state.report_status(5);
+                server_state.bytes_this_period = ByteUnit::Byte(0);
+                watchdog = tokio::time::sleep(Duration::from_secs(5));
             }
         }
 
@@ -336,7 +363,11 @@ pub async fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
     }
 
     let stats = simple_process_stats::ProcessStats::get().await?;
-    println!("Server: shutdown, {} CPU seconds", stats.cpu_time_user.as_secs());
+    println!(
+        "Server: shutdown, {} CPU seconds, {} generated",
+        stats.cpu_time_user.as_secs(),
+        server_state.total_bytes
+    );
     Ok(())
 }
 
@@ -386,8 +417,13 @@ async fn handle_msg(server_state: &mut ServerState, conn_id: usize, msg: ipc::Me
             server_state.submit_count += 1;
             server_state.remote_is_client(conn_id, details).await?;
         }
-        ipc::Message::TaskOutput { .. } => {
-            server_state.send_to_paired_remote(conn_id, msg).await?;
+        ipc::Message::TaskOutput { output_type, content } => {
+            let size = content.len().bytes();
+            server_state.total_bytes += size;
+            server_state.bytes_this_period += size;
+            server_state
+                .send_to_paired_remote(conn_id, ipc::Message::TaskOutput { output_type, content })
+                .await?;
         }
         ipc::Message::TaskDone { .. } => {
             server_state.send_to_paired_remote(conn_id, msg).await?;

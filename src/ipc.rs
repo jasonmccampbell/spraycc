@@ -64,10 +64,10 @@ pub struct TaskDetails {
 
 /// Messages sent between Spraycc processes.
 /// *C++*: This could be done as a trait (interface / base class) or as an enum (enum + struct). A trait
-/// would be more common in open systems the set of messages needs to be extened without requiring a
+/// would be more common in open systems so set of messages can be extened without requiring a
 /// recompile of the whole system (any module can add a new implementation of the interface). I went with
 /// an enum here becaause it's a closed system with a small set of messages so it's nice to have the compiler
-/// validate that every message type is handled. And it's way to experiment with Rust enum's.
+/// validate that every message type is handled. And it's a way to experiment with Rust enum's.
 #[derive(Serialize, Deserialize, Clone)]
 pub enum Message {
     /// Executor is ready, sends access code

@@ -19,4 +19,5 @@ tempdir = "0.3"
 # TODO: Reduce feature set
 tokio = { version = "0.3", features = ["full"] }
 toml = "0.5"
+ubyte = { path = "../ubyte" }
 which = "2"

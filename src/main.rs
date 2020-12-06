@@ -49,7 +49,23 @@ async fn main() {
                         .help("Proivdes the access code specified by the server"),
                 ),
         )
-        .subcommand(SubCommand::with_name("server").about("Starts the SprayCC server, if not already running"))
+        .subcommand(
+            SubCommand::with_name("server")
+                .about("Starts the SprayCC server, if not already running")
+                .arg(
+                    Arg::with_name("max_cpus")
+                        .short("c")
+                        .long("cpus")
+                        .takes_value(true)
+                        .help("Maximum number of CPUs to use, overrides .spraycc"),
+                )
+                .arg(
+                    Arg::with_name("alt_start_cmd")
+                        .short("a")
+                        .long("alt")
+                        .help("Use alt_start_cmd from .spraycc"),
+                ),
+        )
         .subcommand(
             SubCommand::with_name("run")
                 .about("Sends the command on the rest of the command line to the server for execution")
@@ -73,8 +89,15 @@ async fn main() {
         )
         .get_matches();
 
-    let res: Result<(), Box<dyn Error + Send + Sync>> = if matches.subcommand_matches("server").is_some() {
-        server::run().await
+    let res: Result<(), Box<dyn Error + Send + Sync>> = if let Some(server) = matches.subcommand_matches("server") {
+        let max_cpus = match server.value_of("max_cpus").map(|v| v.parse::<usize>()) {
+            Some(Ok(v)) if v > 0 => Some(v),
+            Some(Ok(_)) | Some(Err(_)) => panic!("Invalid --cpus argument '{}', must be a positive integer"),
+            None => None,
+        };
+        let alt_start_cmd = server.is_present("alt_start_cmd");
+
+        server::run(max_cpus, alt_start_cmd).await
     } else if let Some(exec) = matches.subcommand_matches("exec") {
         assert!(exec.is_present("callme") && exec.is_present("access_code"));
         let addr = exec.value_of("callme").unwrap();

@@ -37,6 +37,8 @@ pub struct ExecConfig {
     pub idle_shutdown_after: u64,
     /// Command to use to start exec processes
     pub start_cmd: String,
+    /// Alternate start command
+    pub alt_start_cmd: Option<String>,
 }
 
 impl Default for ExecConfig {
@@ -48,6 +50,7 @@ impl Default for ExecConfig {
             release_delay: 30,
             idle_shutdown_after: 60,
             start_cmd: "spraycc".to_string(), // TODO: lookup up path to this process
+            alt_start_cmd: None,
         }
     }
 }
