@@ -69,6 +69,12 @@ struct ServerState {
     total_bytes: ByteUnit,
     /// Bytes returned during this sampling period
     bytes_this_period: ByteUnit,
+    /// Total task runtime
+    total_run_time: std::time::Duration,
+    /// Total time to send results back
+    total_send_time: std::time::Duration,
+    /// Maximum send time
+    peak_send_time: std::time::Duration,
 }
 
 impl ServerState {
@@ -86,7 +92,7 @@ impl ServerState {
         };
         let start_cmd = format!("{} exec --callme={} --code={}", &cmd, port.addr, port.access_code);
 
-        println!("Generated start command: {}", &start_cmd);
+        println!("SprayCC: Start command: {}", &start_cmd);
 
         ServerState {
             remotes: vec![],
@@ -102,6 +108,9 @@ impl ServerState {
             start_cmd,
             total_bytes: 0.bytes(),
             bytes_this_period: 0.bytes(),
+            total_run_time: Duration::from_secs(0),
+            total_send_time: Duration::from_secs(0),
+            peak_send_time: Duration::from_secs(0),
         }
     }
 
@@ -129,7 +138,7 @@ impl ServerState {
         // Forward to client, as long as it hasn't already been marked 'dead'
         if self.remotes[other_id].conn_type == ConnectionType::Client {
             if let Err(err) = self.remotes[other_id].send_chan.send(msg).await {
-                println!("Error sending to remote (was ctrl-c hit?): {}", err);
+                println!("SprayCC: Error sending to remote (was ctrl-c hit?): {}", err);
                 self.remotes[other_id].conn_type = ConnectionType::Dead;
             }
         }
@@ -229,18 +238,6 @@ impl ServerState {
             );
             exec.paired_id = Some(client_id as u32);
 
-            // println!(
-            //     "Assigning task to exec {}: {}",
-            //     exec_id,
-            //     task.args.iter().fold(String::new(), |mut acc, s| {
-            //         if !acc.is_empty() {
-            //             acc.push_str(" ");
-            //         }
-            //         acc.push_str(s);
-            //         acc
-            //     })
-            // );
-
             // Send the task
             exec.send_chan
                 .send(Box::new(ipc::Message::Task {
@@ -268,14 +265,19 @@ impl ServerState {
     }
 
     fn report_status(self: &ServerState, reporting_period: u64) {
-        println!(
-            "Status: {} / {} finished, {} running, {} executors, {} / sec",
-            self.finish_count,
-            self.submit_count,
-            self.submit_count - self.finish_count - self.task_queue.len(),
-            self.running_exec_count,
-            self.bytes_this_period / reporting_period
-        );
+        let running = self.submit_count - self.finish_count - self.task_queue.len();
+
+        // Avoid reporting while idle
+        if running > 0 || self.running_exec_count > 0 || self.bytes_this_period > 0 {
+            println!(
+                "SprayCC: {} / {} finished, {} running, {} executors, {} / sec",
+                self.finish_count,
+                self.submit_count,
+                running,
+                self.running_exec_count,
+                self.bytes_this_period / reporting_period
+            );
+        }
     }
 
     /// Check to see if we need to start more exec engines
@@ -291,11 +293,10 @@ impl ServerState {
             match Command::new("sh").arg("-c").arg(&self.start_cmd).spawn() {
                 Ok(_) => {
                     self.pending_exec_count += 1;
-                    println!("Exec started");
                     // Tokio does not do kill-on-drop by default, so we let the child run and hopefully finish quickly
                 }
                 Err(err) => {
-                    println!("Error starting exec process '{}': {}", &self.start_cmd, err);
+                    println!("SprayCC: Error starting exec process '{}': {}", &self.start_cmd, err);
                 }
             }
         }
@@ -306,14 +307,16 @@ impl ServerState {
 /// is spun off as a separate task, which relays backs back over an MPSC.
 pub async fn run(max_cpus: Option<usize>, alt_start_cmd: bool) -> Result<(), Box<dyn Error + Send + Sync>> {
     let ip_addr = get_network_addr();
-    let callme = ipc::CallMe {
-        addr: SocketAddr::new(ip_addr, 45678),
+    let mut callme = ipc::CallMe {
+        addr: SocketAddr::new(ip_addr, 0),
         access_code: 42,
     };
-    let _cleaner = write_server_contact_info(&callme)?;
 
     let listener = TcpListener::bind(&callme.addr).await?;
-    println!("Server started on {}", listener.local_addr().unwrap());
+    callme.addr = listener.local_addr()?;
+    println!("Spraycc: Server: {}", &callme.addr);
+
+    let _cleaner = write_server_contact_info(&callme)?;
 
     let (inbound_tx, mut inbound_rx) = mpsc::channel::<(usize, Box<ipc::Message>)>(256);
 
@@ -337,7 +340,7 @@ pub async fn run(max_cpus: Option<usize>, alt_start_cmd: bool) -> Result<(), Box
                             // pass
                         }
                         Err(err) => {
-                            println!("Connection {}: error on connection: {}", remote_id, err);
+                            println!("SprayCC: Connection {}: error on connection: {}", remote_id, err);
                         }
                     }
                 });
@@ -364,9 +367,15 @@ pub async fn run(max_cpus: Option<usize>, alt_start_cmd: bool) -> Result<(), Box
 
     let stats = simple_process_stats::ProcessStats::get().await?;
     println!(
-        "Server: shutdown, {} CPU seconds, {} generated",
+        "SprayCC: shutdown, {} CPU seconds, {} generated",
         stats.cpu_time_user.as_secs(),
         server_state.total_bytes
+    );
+    println!(
+        "SprayCC: task stats: total run time: {:.2}s, total send time: {:.2}s, peak send time: {:.2}s",
+        server_state.total_run_time.as_secs_f64(),
+        server_state.total_send_time.as_secs_f64(),
+        server_state.peak_send_time.as_secs_f64()
     );
     Ok(())
 }
@@ -388,7 +397,7 @@ async fn handle_connection(
                         break;
                     }
                     Err(err) => {
-                        println!("Error reading from socket {}: {}", conn_id, err);
+                        println!("SprayCC: Error reading from socket {}: {}", conn_id, err);
                         break;
                     }
                 }
@@ -428,10 +437,21 @@ async fn handle_msg(server_state: &mut ServerState, conn_id: usize, msg: Box<ipc
                 .send_to_paired_remote(conn_id, Box::new(ipc::Message::TaskOutput { output_type, content }))
                 .await?;
         }
-        ipc::Message::TaskDone { .. } => {
+        ipc::Message::TaskDone {
+            exit_code: _,
+            run_time,
+            send_time,
+        } => {
             server_state.send_to_paired_remote(conn_id, msg).await?;
             server_state.finish_count += 1;
             server_state.exec_is_ready(conn_id).await?;
+
+            // Stats for tracking runtime vs. time to send back results. Does it make sense to pipeline the execs
+            // such that a new task starts while results are being sent back? Or doesn't matter?
+            // TODO: record runtime + send time w/ task name so queue can be prioritized
+            server_state.total_run_time += run_time;
+            server_state.total_send_time += send_time;
+            server_state.peak_send_time = std::cmp::max(server_state.peak_send_time, send_time);
         }
         ipc::Message::TaskFailed { .. } => {
             server_state.send_to_paired_remote(conn_id, msg).await?;
@@ -457,12 +477,12 @@ fn get_network_addr() -> std::net::IpAddr {
         Ok(ifaces) => {
             let non_loops: Vec<&Interface> = ifaces.iter().filter(|iface| !iface.is_loopback()).collect();
             if non_loops.is_empty() {
-                println!("No network interfaces found, falling back to loopback");
+                println!("SprayCC: No network interfaces found, falling back to loopback");
                 IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))
             } else {
                 if non_loops.len() > 1 {
                     println!(
-                        "Warning: multiple network interace found, using {} ({})",
+                        "SprayCC: Warning: multiple network interace found, using {} ({})",
                         non_loops[0].name,
                         non_loops[0].ip()
                     );
@@ -471,7 +491,7 @@ fn get_network_addr() -> std::net::IpAddr {
             }
         }
         Err(err) => {
-            println!("Warning: unable to get network interfaces, defaulting to loopback: {}", err);
+            println!("SprayCC: Warning: unable to get network interfaces, defaulting to loopback: {}", err);
             IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))
         }
     }
