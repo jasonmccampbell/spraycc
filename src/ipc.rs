@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
 use std::path::PathBuf;
+use std::time;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
@@ -64,10 +65,10 @@ pub struct TaskDetails {
 
 /// Messages sent between Spraycc processes.
 /// *C++*: This could be done as a trait (interface / base class) or as an enum (enum + struct). A trait
-/// would be more common in open systems the set of messages needs to be extened without requiring a
+/// would be more common in open systems so set of messages can be extened without requiring a
 /// recompile of the whole system (any module can add a new implementation of the interface). I went with
 /// an enum here becaause it's a closed system with a small set of messages so it's nice to have the compiler
-/// validate that every message type is handled. And it's way to experiment with Rust enum's.
+/// validate that every message type is handled. And it's a way to experiment with Rust enum's.
 #[derive(Serialize, Deserialize, Clone)]
 pub enum Message {
     /// Executor is ready, sends access code
@@ -96,7 +97,12 @@ pub enum Message {
     // Task has finished, all output has been sent. When reeived by the wrapper, the wrapper
     // process should disconnect and exit. A 'None' for the exit code means it was terminated by a signal.
     TaskDone {
+        /// Task exit status: 0 == success, > 0 error code, < 0 exited with signal. None indicates task failed to stard
         exit_code: Option<i32>,
+        /// Runtime of the task itself
+        run_time: time::Duration,
+        /// Time requires to send back the results
+        send_time: time::Duration,
     },
 
     // A specific task should be canceled
@@ -124,7 +130,17 @@ impl fmt::Debug for Message {
                 _ => write!(f, "TaskOutput {:?}, length {}", output_type, content.len()),
             },
             Message::TaskFailed { error_message } => write!(f, "TaskDone, error: {}", error_message),
-            Message::TaskDone { exit_code } => write!(f, "TaskDone, exit code {}", exit_code.unwrap_or(-1)),
+            Message::TaskDone {
+                exit_code,
+                run_time,
+                send_time,
+            } => write!(
+                f,
+                "TaskDone, exit code {}, runtime {}, {}",
+                exit_code.unwrap_or(-1),
+                run_time.as_secs_f64(),
+                send_time.as_secs_f64()
+            ),
             Message::CancelTask => write!(f, "CancelTask"),
             Message::PissOff => write!(f, "PissOff"),
             Message::Dropped => write!(f, "Dropped"),

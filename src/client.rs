@@ -138,7 +138,11 @@ async fn handle_msg(output_files: &mut Vec<LazyFile>, msg: ipc::Message) -> Resu
             println!("Task failed: {}", error_message);
             Ok(Some(-1))
         }
-        ipc::Message::TaskDone { exit_code } => {
+        ipc::Message::TaskDone {
+            exit_code,
+            run_time: _,
+            send_time: _,
+        } => {
             // println!("Task done, exited with {:?}", exit_code);
             Ok(exit_code)
         }

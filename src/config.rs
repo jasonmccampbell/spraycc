@@ -37,6 +37,8 @@ pub struct ExecConfig {
     pub idle_shutdown_after: u64,
     /// Command to use to start exec processes
     pub start_cmd: String,
+    /// Alternate start command
+    pub alt_start_cmd: Option<String>,
 }
 
 impl Default for ExecConfig {
@@ -48,6 +50,7 @@ impl Default for ExecConfig {
             release_delay: 30,
             idle_shutdown_after: 60,
             start_cmd: "spraycc".to_string(), // TODO: lookup up path to this process
+            alt_start_cmd: None,
         }
     }
 }
@@ -87,7 +90,7 @@ fn load_config_file_internal(path: &PathBuf) -> Result<ExecConfig> {
         Ok(config) => Ok(config),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Err(err),
         Err(err) => {
-            println!("Error reading configuration file {}:\n   {}", path.to_string_lossy(), err);
+            println!("SprayCC: Error reading configuration file {}:\n   {}", path.to_string_lossy(), err);
             Err(err)
         }
     }
@@ -99,7 +102,7 @@ fn read_config_file(path: &PathBuf) -> Result<ExecConfig> {
     f.read_to_string(&mut buf)?;
 
     let config: ConfigWrapper = toml::from_str(&buf)?;
-    println!("Read config file from {}", path.to_string_lossy());
+    println!("SprayCC: Read config file from {}", path.to_string_lossy());
     Ok(config.exec)
 }
 
@@ -121,19 +124,18 @@ pub fn read_server_contact_info() -> Option<ipc::CallMe> {
 
 fn read_server_contact_info_from(mut p: PathBuf) -> Option<ipc::CallMe> {
     p.push(CONNECT_FILE);
-    // println!("Checking directory {}", p.to_string_lossy());
     if p.exists() {
         match OpenOptions::new().read(true).open(&p) {
             Ok(mut f) => deserialize_contact_info(&p, &mut f),
             Err(e) => {
-                println!("Unable to open server config file {}: {}", p.to_string_lossy(), e);
+                println!("SprayCC: Unable to open server config file {}: {}", p.to_string_lossy(), e);
                 None
             }
         }
     } else if p.pop() && p.pop() {
         read_server_contact_info_from(p)
     } else {
-        println!("No server config file found in this directory or any parent directory");
+        println!("SprayCC: No server config file found in this directory or any parent directory");
         None
     }
 }
@@ -144,12 +146,12 @@ fn deserialize_contact_info(p: &PathBuf, f: &mut File) -> Option<ipc::CallMe> {
         Ok(_) => match toml::from_str::<ipc::CallMe>(&buf) {
             Ok(config) => Some(config),
             Err(e) => {
-                println!("Error deserializing server config file {}; {}", p.to_string_lossy(), e);
+                println!("SprayCC: Error deserializing server config file {}; {}", p.to_string_lossy(), e);
                 None
             }
         },
         Err(e) => {
-            println!("Error reading server config file {}: {}", p.to_string_lossy(), e);
+            println!("SprayCC: Error reading server config file {}: {}", p.to_string_lossy(), e);
             None
         }
     }
