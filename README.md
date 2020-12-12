@@ -5,26 +5,72 @@ clusters of hundreds or thousands of CPUs managed by tools like [LSF](https://ww
 
 What is "medium or large" to me? Typically 250 kLOC up into the millions of LOC and hundreds or thousands 
 of compilation units. Or, said another way, compile times in the hours if only a single machine were used. 
-C and C++ are what I'm familiar with, but other langauges and unit test runs are potential fits.
+C and C++ are what I'm familiar with, but some unit test suites work well and most other flows driven by command-line-invoked steps are possible.
 
-SprayCC is **very** much a work in progress!
+SprayCC is functional, though still very much a work in progress. See Usage below.
 
 # Prior Art
 Tools such as [DistCC](https://github.com/distcc/distcc) and [Icecream](https://github.com/icecc/icecream) provide 
 similar capability and inspired some of the development of SprayCC. However, both of these tools rely on running 
-a daemon on the build machines to provide compilation services. This is appropriate for dedicated build machines 
-or a group of development machines sharing compute resources. However, jobs on the sorts of clusters targeted by SprayCC 
-are controlled by the cluster manager, and range from single-unit compilation or unit test tasks, to interactive
+a daemon on the build machines to provide compilation services. This model is appropriate for dedicated build machines 
+or a group of development machines sharing compute resources but doesn't work well on the sorts of clusters targeted by SprayCC, 
+which are organized as a set of queues handling a range of tasks from single-unit compilation or unit tests, to interactive
 sessions, to multi-hour/multi-CPU batch jobs. Running an independent daemon is not possible and trying to manage the daemon
 lifetime via the cluster manager is clumsy.
 
 # Project goals
 The loose goals are:
-1. Reduce compilation times for those in this niche by eliminating scheduling latency and avoiding NFS cache delay headaches
-2. Provide an opportunity for me to learn [Rust](https://www.rust-lang.org/) by doing something "real"
+1. Reduce compilation times for those in this niche by eliminating scheduling latency and using acquired CPU resources for
+multiple tasks, rather than separately jobs for every compilation task.
+1. Avoid NFS cache delay headaches which can introduce build errors or build delays waiting for the cache on one machine
+to reflect results written by another.
+1. Provide an opportunity for me to learn [Rust](https://www.rust-lang.org/) by doing something "real"
 
-# Problem description
-TODO: scheduling latency, NFS cache headaches, bursty interleaving of jobs
+# Usage
+To use SprayCC to build an application, first setup the .spraycc configuration file in your home directory. The file
+spraycc.toml in the source tree provides a template. The most important value to customize is the 'start_cmd' value
+which specifies how to start a SprayCC take in cluster.
+
+Once the configuration file is set, the server can be started with:
+
+    spraycc server
+
+It will report the IP address and port the server is listening on, which configuration file was read, and the start command
+which will be used. This is a good sanity check that all is in order, and the server will exit after some period
+(idle_shutdown_after) if unused. The server needs to be started in the root tree of the project to be built, or above.
+
+To submit tasks using SprayCC, each compile step needs to be prefixed with "spraycc run". For example:
+
+    spraycc run g++ -c hello.cpp -o hello.o
+
+SprayCC will search for the file _.spraycc_server_ in the current directory, or, if not found, each parent directory up to
+the root until found. This instructs it on how to find the server. Once found, the compilation command is submitted to the
+server. The server starts executors as needed and distributes the submitted jobs across all available executors.
+
+How the 'spraycc run' prefix is added depends on the structure of your Make system. In many cases, _bsub_, _gridsub_, or
+other submit command is already inserted and it is just a matter of using 'spraycc run' instead.
+
+Now it is time to do a trial build. For the first run, it can be helpful to start the server in a separate terminal
+from where the build will be performed. In one terminal, start the server:
+
+    > spraycc server
+    Spraycc: Server: 10.100.200.300:45678
+    SprayCC: Read config file from /home/jason/.spraycc
+    SprayCC: Start command: bsub -q linux -W 1.0 /tools/bin/spraycc exec --callme=10.100.200.300:45678 --code=42
+
+In a different terminal, start the build. In some environments it is common to dump all compile jobs into the queue at
+once, and in others it is preferable to limit the number of CPUs used at with "make -j100" (limit of 100 CPUs) or similar.
+SprayCC is designed to work best with as large a queue of jobs as possible because it scaled well and eventually it will
+prioritize the queue to run longer jobs first.
+
+As the job runs, the server will periodically update its status:
+
+    SprayCC: 19 / 60 finished, 4 running, 4 executors, 243.64KiB / sec
+
+The server will start with 'initial_count' executors, and add 'keep_pending' additional jobs until 'max_count' is
+reached. This avoids saturating a busy queue with too many jobs, but still allows the total number of CPUs to be
+high if the cluster usage is low. The configuration setting 'release_delay' specifies how long to wait after the most
+recent task submission to start releasing executors idle executors and thus CPU resources back to the queue.
 
 # Execution structure
 SprayCC consists of a single executable run in one of three modes:
@@ -61,7 +107,7 @@ runtimes is prohibitive (Python and Java, I'm looking at you).
 libraries, if only because setting everything up is pain. 
 
 And there is a second reason: lack of high-level async support. I originally wrote this project in Rust using the 
-Metal I/O ([MIO](https://crates.io/crates/mio)) crate for low-level asychronous I/O, which is at roughtly the same level
+Metal I/O ([MIO](https://crates.io/crates/mio)) crate for low-level asynchronous I/O, which is at roughly the same level
 of abstraction as Boost's ASIO library. This meant writing the state machines for all of the communication by hand,
 which quickly became unproductive when I would get only an hour to work on it once, maybe twice, in a week.
 
@@ -80,4 +126,4 @@ The development style is now completely different.
 # Schedule and contributions
 This is an as-evening-time-permits project -- there is no schedule.
 
-Contributions, questions and suggestions are always welcome.
+Contributions, questions, criticisms and suggestions are always welcome.
