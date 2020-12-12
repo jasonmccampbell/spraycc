@@ -13,15 +13,8 @@ release_delay = 30
 # Shutdown after idle for N seconds
 idle_shutdown_after = 60
 # Command used to start new executors. Options such as --callme will be appended.
-start_cmd = "bsub -q pegasus -n 1 -R 'rusage[mem=10GB]' -W 1:0 /home/jasonm/packages/spraycc/spraycc"
+start_cmd = "bsub -q linux -n 1 -W 1:0 /tools/bin/spraycc"
 
-
-[command.runqa]
-command = "runqa.sh"
-env_vars = ["GEOM_HOME", "FRED"]
-output_files = []
-
-[command.gcc]
-command = ["gcc", "g++", "clang"]
-output_files = ["after", "-o", "after", "-MF"]
-run_local_if = ["not_exists", ["-c", "-s", "-e", "-MD"]]
+# Alternate start command invoked by --alt option, useful for selecting a
+# different queue or completely different submit command
+alt_start_cmd = "/tools/bin/submit_job /tools/bin/spraycc"
