@@ -7,7 +7,7 @@ What is "medium or large" to me? Typically 250 kLOC up into the millions of LOC 
 of compilation units. Or, said another way, compile times in the hours if only a single machine were used. 
 C and C++ are what I'm familiar with, but some unit test suites work well and most other flows driven by command-line-invoked steps are possible.
 
-SprayCC is functional, though still very much a work in progress. See Usage below.
+SprayCC is functional and useful, though could use some polish. See Usage below.
 
 # Prior Art
 Tools such as [DistCC](https://github.com/distcc/distcc) and [Icecream](https://github.com/icecc/icecream) provide 
@@ -111,7 +111,7 @@ Metal I/O ([MIO](https://crates.io/crates/mio)) crate for low-level asynchronous
 of abstraction as Boost's ASIO library. This meant writing the state machines for all of the communication by hand,
 which quickly became unproductive when I would get only an hour to work on it once, maybe twice, in a week.
 
-After a gap of a year where I was too busy at work to work on this project, Rust's async / await features stabilized,
+After a gap of a year where I was too busy to work on this project, Rust's async / await features stabilized,
 and the excellent [Tokio crate](https://crates.io/crates/tokio) matured. I don't know if when I originally looked
 at it process support wasn't there yet or whether I didn't know enough to understand it, but now it is very solid
 and I found [Tokio's select!](https://tokio.rs/tokio/tutorial/select) macro. I deleted 80% of the original code and
