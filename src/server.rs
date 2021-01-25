@@ -321,7 +321,7 @@ pub async fn run(max_cpus: Option<usize>, alt_start_cmd: bool) -> Result<(), Box
     let (inbound_tx, mut inbound_rx) = mpsc::channel::<(usize, Box<ipc::Message>)>(256);
 
     // Make sure we check on things even if no clients are communicating
-    let mut watchdog = tokio::time::sleep(Duration::from_secs(5));
+    let mut watchdog = Box::pin(tokio::time::sleep(Duration::from_secs(5)));
 
     // Server state includes the user configuration from .spraycc, plus overrides
     let mut server_state = ServerState::new(callme, max_cpus, alt_start_cmd);
@@ -352,11 +352,11 @@ pub async fn run(max_cpus: Option<usize>, alt_start_cmd: bool) -> Result<(), Box
                 }
                 server_state.activity_occurred();
             }
-            _ = &mut watchdog => {
+            _ = &mut watchdog, if !watchdog.is_elapsed() => {
                 server_state.update().await?;
                 server_state.report_status(5);
                 server_state.bytes_this_period = ByteUnit::Byte(0);
-                watchdog = tokio::time::sleep(Duration::from_secs(5));
+                watchdog = Box::pin(tokio::time::sleep(Duration::from_secs(5)));
             }
         }
 

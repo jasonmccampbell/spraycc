@@ -7,17 +7,17 @@ edition = "2018"
 [dependencies]
 bincode = "1"
 byteorder = "1"
-bytes = "0.6"
+bytes = "^1"
 clap = "2"
 get_if_addrs = "0.5"
 gethostname = "0"
 home = "0.5"
 lazy_static = "1"
 serde = { version = "1", features = ["derive"] }
-simple-process-stats = "0.2"
+simple-process-stats = "^1"
 tempdir = "0.3"
 # TODO: Reduce feature set
-tokio = { version = "0.3", features = ["full"] }
+tokio = { version = "^1.1", features = ["full"] }
 toml = "0.5"
 ubyte = { path = "../ubyte" }
 which = "2"
