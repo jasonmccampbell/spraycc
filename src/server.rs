@@ -356,7 +356,7 @@ pub async fn run(max_cpus: Option<usize>, alt_start_cmd: bool) -> Result<(), Box
                 server_state.update().await?;
                 server_state.report_status(5);
                 server_state.bytes_this_period = ByteUnit::Byte(0);
-                watchdog = Box::pin(tokio::time::sleep(Duration::from_secs(5)));
+                watchdog.set(tokio::time::sleep(Duration::from_secs(5)));
             }
         }
 
