@@ -4,12 +4,13 @@
 /// results are available.
 ///
 extern crate lazy_static;
+extern crate rand;
 extern crate tokio;
 extern crate which;
 
 use lazy_static::lazy_static;
-use std::error::Error;
 use std::ffi::OsString;
+use std::{error::Error, time::Duration};
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 use tokio::process;
@@ -76,7 +77,7 @@ pub async fn run(args: Vec<String>) -> Result<i32, Box<dyn Error + Send + Sync>>
     if run_local {
         status = run_local_task(task).await?;
     } else if let Some(callme) = config::read_server_contact_info() {
-        match TcpStream::connect(callme.addr).await {
+        match connect_w_retry(&callme).await {
             Ok(stream) => {
                 let mut conn = ipc::Connection::new(stream);
 
@@ -105,11 +106,7 @@ pub async fn run(args: Vec<String>) -> Result<i32, Box<dyn Error + Send + Sync>>
                     output_files.pop().unwrap().shutdown().await?
                 }
             }
-            Err(err) => {
-                println!(
-                    "Unable to connect to server at {}, please make sure it was started with 'spraycc server': {}",
-                    callme.addr, err
-                );
+            Err(_) => {
                 status = Some(-1);
             }
         }
@@ -120,6 +117,29 @@ pub async fn run(args: Vec<String>) -> Result<i32, Box<dyn Error + Send + Sync>>
         // Err(String::from("No server configuration found"))
     }
     Ok(status.expect("No task status as set"))
+}
+
+async fn connect_w_retry(callme: &ipc::CallMe) -> Result<TcpStream, Box<dyn Error + Send + Send>> {
+    let mut count = 0;
+    loop {
+        match TcpStream::connect(callme.addr).await {
+            Ok(stream) => return Ok(stream),
+            Err(err) => {
+                if count < 5 {
+                    count += 1;
+                    println!("Retrying connection to {} ({}): {}", callme.addr, count, &err);
+                    let duration = Duration::from_millis(rand::random::<u64>() % 2048 + 512); // 2-2.5s backoff period
+                    tokio::time::sleep(duration).await;
+                } else {
+                    println!(
+                        "Unable to connect to server at {}, please make sure it was started with 'spraycc server': {}",
+                        callme.addr, &err
+                    );
+                    return Err(Box::new(err));
+                }
+            }
+        }
+    }
 }
 
 /// Handles messages coming from the client via the server. These will be stderr, stdout and generated files from

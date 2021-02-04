@@ -30,7 +30,7 @@ pub mod task;
 #[tokio::main]
 async fn main() {
     let matches = App::new("SprayCC")
-        .version("0.1.0")
+        .version("0.8.0")
         .about("SprayCC - distributed compiler wrapper")
         .setting(AppSettings::SubcommandRequiredElseHelp)
         .subcommand(
@@ -114,18 +114,22 @@ async fn main() {
             panic!("Error: access code must be a numeric value, got: {}", code);
         }
     } else if let Some(run) = matches.subcommand_matches("run") {
-        let args: Vec<String> = run.values_of("compiler_options").unwrap().map(String::from).collect();
-        match client::run(args).await {
-            Ok(ec) if ec > 0 => {
-                // Remote task failed so exit with the same exit code
-                std::process::exit(ec);
+        if let Some(compiler_opts) = run.values_of("compiler_options") {
+            let args: Vec<String> = compiler_opts.map(String::from).collect();
+            match client::run(args).await {
+                Ok(ec) if ec > 0 => {
+                    // Remote task failed so exit with the same exit code
+                    std::process::exit(ec);
+                }
+                Ok(ec) if ec < 0 => {
+                    // Remote task failed with signal
+                    std::process::exit(-1);
+                }
+                Ok(_) => Ok(()),
+                Err(e) => Err(e),
             }
-            Ok(ec) if ec < 0 => {
-                // Remote task failed with signal
-                std::process::exit(-1);
-            }
-            Ok(_) => Ok(()),
-            Err(e) => Err(e),
+        } else {
+            panic!("'spraycc run' must be followed by the command line to be run");
         }
     } else if let Some(fakecc) = matches.subcommand_matches("fakecc") {
         for output in fakecc.values_of("output_file").unwrap() {
