@@ -9,10 +9,11 @@ use get_if_addrs::{get_if_addrs, Interface};
 use std::collections::VecDeque;
 use std::error::Error;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::process::Command;
 use tokio::sync::mpsc;
+use tokio::time::{Duration, Instant};
 use ubyte::{ByteUnit, ToByteUnit};
 
 use super::config::{load_config_file, write_server_contact_info, ExecConfig};
@@ -321,7 +322,8 @@ pub async fn run(max_cpus: Option<usize>, alt_start_cmd: bool) -> Result<(), Box
     let (inbound_tx, mut inbound_rx) = mpsc::channel::<(usize, Box<ipc::Message>)>(256);
 
     // Make sure we check on things even if no clients are communicating
-    let mut watchdog = Box::pin(tokio::time::sleep(Duration::from_secs(5)));
+    let watchdog = tokio::time::sleep(Duration::from_secs(5));
+    tokio::pin!(watchdog);
 
     // Server state includes the user configuration from .spraycc, plus overrides
     let mut server_state = ServerState::new(callme, max_cpus, alt_start_cmd);
@@ -356,7 +358,7 @@ pub async fn run(max_cpus: Option<usize>, alt_start_cmd: bool) -> Result<(), Box
                 server_state.update().await?;
                 server_state.report_status(5);
                 server_state.bytes_this_period = ByteUnit::Byte(0);
-                watchdog.set(tokio::time::sleep(Duration::from_secs(5)));
+                watchdog.as_mut().reset(Instant::now() + Duration::from_secs(5));
             }
         }
 
