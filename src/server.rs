@@ -433,8 +433,11 @@ async fn handle_msg(server_state: &mut ServerState, conn_id: usize, msg: Box<ipc
         }
         ipc::Message::TaskOutput { output_type, content } => {
             let size = content.len().bytes();
-            server_state.total_bytes += size;
-            server_state.bytes_this_period += size;
+            // TODO: Simplify once ubyte crate PR merged
+            // server_state.total_bytes += size;
+            // server_state.bytes_this_period += size;
+            server_state.total_bytes = server_state.total_bytes + size;
+            server_state.bytes_this_period = server_state.bytes_this_period + size;
             server_state
                 .send_to_paired_remote(conn_id, Box::new(ipc::Message::TaskOutput { output_type, content }))
                 .await?;

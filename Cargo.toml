@@ -18,7 +18,7 @@ serde = { version = "1", features = ["derive"] }
 simple-process-stats = "^1"
 tempdir = "0.3"
 # TODO: Reduce feature set
-tokio = { version = "^1.1", features = ["full"] }
+tokio = { version = "^1.2", features = ["full"] }
 toml = "0.5"
-ubyte = { path = "../ubyte" }
+ubyte = "^0.10"
 which = "2"

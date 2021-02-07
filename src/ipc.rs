@@ -1,5 +1,6 @@
 extern crate byteorder;
 extern crate bytes;
+extern crate tokio;
 
 use byteorder::{BigEndian, ByteOrder};
 use bytes::{Buf, BytesMut};
@@ -24,9 +25,7 @@ use tokio::net::TcpStream;
 /// it to be converted to `Box<dyn std::error::Error>`.
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 
-/// A specialized `Result` type for mini-redis operations.
-///
-/// This is defined as a convenience.
+/// A specialized `Result` type defined as a convenience.
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// The host and port to connect to and the access code to use
@@ -205,151 +204,87 @@ impl Connection {
         self.stream.flush().await?;
         Ok(())
     }
+
+    pub async fn shutdown(&mut self) -> Result<()> {
+        self.stream.shutdown().await?;
+        Ok(())
+    }
 }
 
-// #[cfg(test)]
-// use mio::net::{TcpListener, TcpStream};
-// #[cfg(test)]
-// use mio::*;
-// #[cfg(test)]
-// use std::net::Shutdown;
+#[cfg(test)]
+use std::net::SocketAddr;
+#[cfg(test)]
+use tokio::net::TcpListener;
+#[cfg(test)]
+use tokio::time::Duration;
 
-// /// Test sending / receiving messages
-// #[test]
-// fn test_msgs() {
-//     fn vec_of_size(sz: usize) -> Vec<u8> {
-//         let mut v: Vec<u8> = Vec::new();
-//         v.resize(sz, 0);
-//         v
-//     }
+// Test sending / receiving messages
+#[tokio::test]
+async fn test_msgs() {
+    fn vec_of_size(sz: usize) -> Vec<u8> {
+        let mut v: Vec<u8> = Vec::new();
+        v.resize(sz, 0);
+        v
+    }
 
-//     const LISTENER: Token = Token(0);
-//     const SERVER: Token = Token(1);
-//     const CLIENT: Token = Token(2);
+    let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
 
-//     let addr = "127.0.0.1:0".parse().unwrap();
+    // Setup the server socket
+    let server = TcpListener::bind(addr).await.unwrap();
+    println!("Server listening on {:?}", server.local_addr());
 
-//     // Setup the server socket
-//     let mut server = TcpListener::bind(addr).unwrap();
-//     println!("Server listening on {:?}", server.local_addr());
+    // Setup the client socket
+    let client_sock = TcpStream::connect(server.local_addr().unwrap()).await.unwrap();
+    println!("Connection ready");
 
-//     // Create a poll instance
-//     let mut poll = Poll::new().unwrap();
+    let (socket, _) = server.accept().await.unwrap();
 
-//     // Start listening for incoming connections
-//     poll.registry().register(&mut server, LISTENER, Interest::READABLE).unwrap();
+    // Spawn a task to send the test message
+    tokio::spawn(async move {
+        let mut conn = Connection::new(client_sock);
+        conn.write_message(&Message::YourObedientServant { access_code: 666 }).await.unwrap();
+        conn.write_message(&Message::TaskDone {
+            exit_code: Some(0),
+            run_time: Duration::from_secs(2),
+            send_time: Duration::from_millis(15),
+        })
+        .await
+        .unwrap();
+        // A large message, greater than one package
+        conn.write_message(&Message::TaskOutput {
+            output_type: OutputType::File(1),
+            content: vec_of_size(8192 * 16),
+        })
+        .await
+        .unwrap();
 
-//     // Setup the client socket
-//     let mut client_sock = TcpStream::connect(server.local_addr().unwrap()).unwrap();
-//     println!("Connection ready");
+        conn.write_message(&Message::PissOff {}).await.unwrap();
+        tokio::time::sleep(Duration::from_secs(1)).await; // Hack, just make sure all of the messages get out
+    });
 
-//     // Register the socket
-//     poll.registry().register(&mut client_sock, CLIENT, Interest::WRITABLE).unwrap();
+    let mut conn = Connection::new(socket);
+    let mut msgs_recvd = 0;
+    loop {
+        match next_message(&mut conn).await {
+            Some(Message::PissOff) => {
+                msgs_recvd += 1;
+                break;
+            }
+            Some(_) => msgs_recvd += 1,
+            None => break,
+        }
+    }
+    conn.shutdown().await.unwrap();
+    assert_eq!(msgs_recvd, 4);
+}
 
-//     // Create storage for events
-//     let mut events = Events::with_capacity(32);
-//     let mut server_sock: Option<TcpStream> = None;
-
-//     let mut client_state = 0;
-//     let mut msgs_recvd = 0;
-//     let mut read_state = IncrementalBuffer::new_incoming();
-
-//     loop {
-//         println!("Starting loop");
-//         poll.poll(&mut events, None).unwrap();
-
-//         for event in events.iter() {
-//             match event.token() {
-//                 LISTENER => {
-//                     let mut c = server.accept().unwrap().0;
-//                     poll.registry().register(&mut c, SERVER, Interest::READABLE).unwrap();
-//                     server_sock = Some(c);
-//                     println!("Accepted connection");
-//                 }
-//                 SERVER => {
-//                     if event.is_readable() {
-//                         println!("Server is readable");
-//                         if server_sock.is_some() {
-//                             let msgs = read_message_stream(server_sock.as_mut().unwrap(), &mut read_state).unwrap();
-//                             println!(
-//                                 "Read {} messages, buffer has {} of {:?} bytes",
-//                                 msgs.len(),
-//                                 read_state.read,
-//                                 read_state.size
-//                             );
-//                             for msg in msgs {
-//                                 println!("Got message: {:?}", msg);
-//                                 msgs_recvd += 1;
-//                                 match msg {
-//                                     Message::PissOff => {
-//                                         if let Some(ss) = server_sock.as_mut() {
-//                                             println!("We can leave now");
-//                                             poll.registry().deregister(ss).unwrap();
-//                                             ss.shutdown(Shutdown::Both).unwrap();
-//                                         }
-//                                         server_sock = None;
-//                                     }
-//                                     _ => {}
-//                                 }
-//                             }
-//                         }
-//                     }
-//                 }
-//                 CLIENT => {
-//                     if event.is_read_closed() || event.is_write_closed() || event.is_error() {
-//                         println!("Got error on client");
-//                         poll.registry().deregister(&mut client_sock).unwrap();
-//                         break;
-//                     } else {
-//                         if event.is_writable() {
-//                             match client_state {
-//                                 0 => {
-//                                     // A basic message
-//                                     send_magic(&mut client_sock).unwrap();
-//                                     send_message(&mut client_sock, &Message::YourObedientServant { access_code: 666 }).unwrap();
-//                                 }
-//                                 1 => {
-//                                     // A large message, greater than one package
-//                                     send_message(
-//                                         &mut client_sock,
-//                                         &Message::TaskOutput {
-//                                             output_type: OutputType::File(1),
-//                                             content: vec_of_size(8192 * 16),
-//                                         },
-//                                     )
-//                                     .unwrap();
-//                                 }
-//                                 2 => {
-//                                     // A bunch 'o messages in a stream
-//                                     send_message(&mut client_sock, &Message::TaskDone { exit_code: Some(0) }).unwrap();
-//                                     send_message(&mut client_sock, &Message::TaskDone { exit_code: Some(1) }).unwrap();
-//                                     send_message(
-//                                         &mut client_sock,
-//                                         &Message::TaskOutput {
-//                                             output_type: OutputType::File(1),
-//                                             content: vec_of_size(17),
-//                                         },
-//                                     )
-//                                     .unwrap();
-//                                     send_message(&mut client_sock, &Message::TaskDone { exit_code: Some(2) }).unwrap();
-//                                     send_message(&mut client_sock, &Message::CancelTask {}).unwrap();
-//                                     send_message(&mut client_sock, &Message::PissOff {}).unwrap();
-//                                 }
-//                                 _ => {}
-//                             }
-//                             client_sock.flush().unwrap();
-//                             println!("Completed client state {}", client_state);
-//                             client_state += 1;
-//                             poll.registry().reregister(&mut client_sock, CLIENT, Interest::WRITABLE).unwrap();
-//                         }
-//                     }
-//                 }
-//                 _ => unreachable!(),
-//             }
-//         }
-//         if server_sock.is_none() {
-//             break;
-//         }
-//     }
-//     assert_eq!(msgs_recvd, 8);
-// }
+#[cfg(test)]
+async fn next_message(conn: &mut Connection) -> Option<Message> {
+    loop {
+        match conn.read_message().await {
+            Ok(Some(msg)) => return Some(msg),
+            Err(_) => return None,
+            Ok(None) => {} // Nothing ready yet
+        }
+    }
+}
