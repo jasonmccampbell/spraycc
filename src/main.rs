@@ -63,8 +63,16 @@ async fn main() {
                     Arg::with_name("alt_start_cmd")
                         .short("a")
                         .long("alt")
-                        .help("Use alt_start_cmd from .spraycc"),
-                ),
+                        .help("Use alt_start_cmd from .spraycc")
+                        .conflicts_with("both_queues"),
+                )
+                .arg(
+                    Arg::with_name("both_queues")
+                        .short("b")
+                        .long("both")
+                        .help("Submit jobs using both start commands"),
+                )
+                .arg(Arg::with_name("verbose").short("v").long("verbose").help("Verbose server logging")),
         )
         .subcommand(
             SubCommand::with_name("run")
@@ -95,9 +103,11 @@ async fn main() {
             Some(Ok(_)) | Some(Err(_)) => panic!("Invalid --cpus argument '{}', must be a positive integer"),
             None => None,
         };
-        let alt_start_cmd = server.is_present("alt_start_cmd");
+        let both_start_cmds = server.is_present("both_queues");
+        let alt_start_cmd = server.is_present("alt_start_cmd") && !both_start_cmds;
+        let verbose = server.is_present("verbose");
 
-        server::run(max_cpus, alt_start_cmd).await
+        server::run(max_cpus, alt_start_cmd, both_start_cmds, verbose).await
     } else if let Some(exec) = matches.subcommand_matches("exec") {
         assert!(exec.is_present("callme") && exec.is_present("access_code"));
         let addr = exec.value_of("callme").unwrap();
