@@ -100,7 +100,7 @@ async fn main() {
     let res: Result<(), Box<dyn Error + Send + Sync>> = if let Some(server) = matches.subcommand_matches("server") {
         let max_cpus = match server.value_of("max_cpus").map(|v| v.parse::<usize>()) {
             Some(Ok(v)) if v > 0 => Some(v),
-            Some(Ok(_)) | Some(Err(_)) => panic!("Invalid --cpus argument '{}', must be a positive integer"),
+            Some(Ok(_)) | Some(Err(_)) => panic!("Invalid --cpus argument, must be a positive integer"),
             None => None,
         };
         let both_start_cmds = server.is_present("both_queues");

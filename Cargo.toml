@@ -14,7 +14,7 @@ gethostname = "0"
 home = "0.5"
 lazy_static = "1"
 rand = "^0.8"
-serde = { version = "1", features = ["derive"] }
+serde = { version = "^1", features = ["derive"] }
 simple-process-stats = "^1"
 tempdir = "0.3"
 # TODO: Reduce feature set
