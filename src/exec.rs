@@ -25,7 +25,10 @@ use std::error::Error;
 pub async fn run(callme: ipc::CallMe) -> Result<(), Box<dyn Error + Send + Sync>> {
     let stream = TcpStream::connect(callme.addr).await?;
     let mut conn = ipc::Connection::new(stream);
-    conn.write_message(&ipc::Message::YourObedientServant { access_code: 42 }).await?;
+    conn.write_message(&ipc::Message::YourObedientServant {
+        access_code: callme.access_code,
+    })
+    .await?;
 
     loop {
         match conn.read_message().await? {

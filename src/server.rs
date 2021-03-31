@@ -1,4 +1,5 @@
 extern crate get_if_addrs;
+extern crate rand;
 extern crate simple_process_stats;
 extern crate tokio;
 extern crate ubyte;
@@ -6,6 +7,7 @@ extern crate ubyte;
 // Setup some tokens to allow us to identify which event is
 // for which socket.
 use get_if_addrs::{get_if_addrs, Interface};
+use ipc::Message;
 use std::collections::VecDeque;
 use std::error::Error;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -52,8 +54,10 @@ struct ServerState {
     submit_count: usize,
     /// Total tasks completed
     finish_count: usize,
-    /// Number of exec processes start but which have not yet phoned home
+    /// Number of exec processes started but which have not yet phoned home
     pending_exec_count: usize,
+    /// Number of exec processes started in alt queue but which have not yet phoned home
+    second_pending_exec_count: usize,
     /// Number of currently running exec processes
     running_exec_count: usize,
     /// Timestamp when the most recent task was received, or none if no task yet received
@@ -64,6 +68,10 @@ struct ServerState {
     user_config: ExecConfig,
     /// Exec process start command
     start_cmd: String,
+    /// Second start command, if in use
+    second_start_cmd: Option<String>,
+    /// Verbose reporting
+    verbose: bool,
 
     // Metrics
     /// Total bytes of files (TaskOutput) messages returned
@@ -79,7 +87,7 @@ struct ServerState {
 }
 
 impl ServerState {
-    fn new(port: ipc::CallMe, max_cpus: Option<usize>, alt_start_cmd: bool) -> ServerState {
+    fn new(port: ipc::CallMe, max_cpus: Option<usize>, alt_start_cmd: bool, both_queues: bool, verbose: bool) -> ServerState {
         let mut config = load_config_file();
 
         if let Some(c) = max_cpus {
@@ -91,9 +99,23 @@ impl ServerState {
         } else {
             &config.start_cmd
         };
+        assert!(port.access_code & 0x01 == 0, "Expected bit-0 of access code to be 0");
         let start_cmd = format!("{} exec --callme={} --code={}", &cmd, port.addr, port.access_code);
-
         println!("SprayCC: Start command: {}", &start_cmd);
+
+        let second_start_cmd = if both_queues {
+            if let Some(cmd) = config.alt_start_cmd.as_ref() {
+                // access_code + 1 because last bit indicates secondary queue
+                let sc = format!("{} exec --callme={} --code={}", &cmd, port.addr, port.access_code + 1);
+                println!("SprayCC: Second command: {}", &sc);
+                Some(sc)
+            } else {
+                println!("--both ignored: alt_start_cmd provided in .spraycc file");
+                None
+            }
+        } else {
+            None
+        };
 
         ServerState {
             remotes: vec![],
@@ -102,11 +124,14 @@ impl ServerState {
             submit_count: 0,
             finish_count: 0,
             pending_exec_count: 0,
+            second_pending_exec_count: 0,
             running_exec_count: 0,
             last_submit_time: None,
             last_activity_time: SystemTime::now(),
             user_config: config,
             start_cmd,
+            second_start_cmd,
+            verbose,
             total_bytes: 0.bytes(),
             bytes_this_period: 0.bytes(),
             total_run_time: Duration::from_secs(0),
@@ -153,6 +178,10 @@ impl ServerState {
             send_chan: tx,
             paired_id: None,
         });
+        if self.verbose {
+            println!("SprayCC: added pending remote in slot {}", self.remotes.len() - 1);
+        }
+
         self.remotes.len() - 1
     }
 
@@ -175,6 +204,9 @@ impl ServerState {
             self.running_exec_count -= 1;
         }
         self.remotes[conn_id].conn_type = ConnectionType::Dead;
+        if self.verbose {
+            println!("SprayCC: connection {} dropped", conn_id);
+        }
         Ok(())
     }
 
@@ -185,16 +217,29 @@ impl ServerState {
         self.remotes[conn_id].conn_type = ConnectionType::Client;
         self.task_queue.push_back((conn_id, details));
         self.last_submit_time = Some(SystemTime::now());
+        if self.verbose {
+            println!("SprayCC: connection {} is a client", conn_id);
+        }
         self.update().await
     }
 
     /// A remote is identified after it sends its first message. In this case, the remote is an executor and is now
     /// available to start processing tasks. If one is available, the task is sent to it.
-    async fn remote_is_exec(self: &mut ServerState, conn_id: usize) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn remote_is_exec(self: &mut ServerState, conn_id: usize, second_queue: bool) -> Result<(), Box<dyn Error + Send + Sync>> {
         self.remotes[conn_id].conn_type = ConnectionType::Exec;
         self.running_exec_count += 1;
-        if self.pending_exec_count > 0 {
+        if !second_queue && self.pending_exec_count > 0 {
             self.pending_exec_count -= 1;
+        } else if second_queue && self.second_pending_exec_count > 0 {
+            self.second_pending_exec_count -= 1;
+        }
+
+        if self.verbose {
+            println!(
+                "SprayCC: connection {} is an exec from {} queue",
+                conn_id,
+                if !second_queue { "primary" } else { "secondary" }
+            );
         }
         self.exec_is_ready(conn_id).await
     }
@@ -208,6 +253,9 @@ impl ServerState {
 
     /// Processes the queues and starts/shuts down exec processes
     async fn update(self: &mut ServerState) -> Result<(), Box<dyn Error + Send + Sync>> {
+        if self.verbose {
+            println!("SprayCC: updating state");
+        }
         self.start_execs().await;
         self.check_queues().await
     }
@@ -286,15 +334,51 @@ impl ServerState {
         if self.task_queue.is_empty() {
             return;
         }
-        while self.running_exec_count + self.pending_exec_count < self.task_queue.len()
-            && (self.running_exec_count + self.pending_exec_count < self.user_config.max_count
-                && self.pending_exec_count < self.user_config.keep_pending
-                || self.running_exec_count + self.pending_exec_count < self.user_config.initial_count)
+
+        let init_needed = std::cmp::max(self.user_config.initial_count, self.running_exec_count) - self.running_exec_count;
+        let keep_pending = std::cmp::max(self.user_config.keep_pending, init_needed);
+        if self.verbose {
+            println!(
+                "SprayCC: start execs: queue={}, running={}, pending={},{} init_needed={}, keep_pending={}",
+                self.task_queue.len(),
+                self.running_exec_count,
+                self.pending_exec_count,
+                self.second_pending_exec_count,
+                init_needed,
+                keep_pending
+            );
+        }
+        if self.second_start_cmd.is_some() {
+            let half_pending = (keep_pending + 1) / 2;
+            self.start_execs_in_queue(false, half_pending).await;
+            self.start_execs_in_queue(true, half_pending).await;
+        } else {
+            self.start_execs_in_queue(false, keep_pending).await;
+        }
+    }
+
+    async fn start_execs_in_queue(self: &mut ServerState, alt_queue: bool, keep_pending: usize) {
+        let (cmd, pending, other_pending) = if !alt_queue {
+            (&self.start_cmd, &mut self.pending_exec_count, self.second_pending_exec_count)
+        } else {
+            (
+                self.second_start_cmd.as_ref().unwrap(),
+                &mut self.second_pending_exec_count,
+                self.pending_exec_count,
+            )
+        };
+
+        while self.running_exec_count + *pending + other_pending < self.task_queue.len()
+            && self.running_exec_count + *pending + other_pending < self.user_config.max_count
+            && *pending < keep_pending
         {
-            match Command::new("sh").arg("-c").arg(&self.start_cmd).spawn() {
+            match Command::new("sh").arg("-c").arg(&cmd).spawn() {
                 Ok(_) => {
-                    self.pending_exec_count += 1;
+                    *pending += 1;
                     // Tokio does not do kill-on-drop by default, so we let the child run and hopefully finish quickly
+                    if self.verbose {
+                        println!("Submitted job to {} queue", if !alt_queue { "primary" } else { "secondary" });
+                    }
                 }
                 Err(err) => {
                     println!("SprayCC: Error starting exec process '{}': {}", &self.start_cmd, err);
@@ -306,11 +390,13 @@ impl ServerState {
 
 /// Main server loop. This starts a socket listener to wait for remote connections. Each connection
 /// is spun off as a separate task, which relays backs back over an MPSC.
-pub async fn run(max_cpus: Option<usize>, alt_start_cmd: bool) -> Result<(), Box<dyn Error + Send + Sync>> {
+pub async fn run(max_cpus: Option<usize>, alt_start_cmd: bool, both_queues: bool, verbose: bool) -> Result<(), Box<dyn Error + Send + Sync>> {
     let ip_addr = get_network_addr();
+    // Toml only allows i64, LSb used to indicate which pool remote started from
+    let access_code = (rand::random::<u64>() >> 1) & !1u64;
     let mut callme = ipc::CallMe {
         addr: SocketAddr::new(ip_addr, 0),
-        access_code: 42,
+        access_code,
     };
 
     let listener = TcpListener::bind(&callme.addr).await?;
@@ -326,7 +412,7 @@ pub async fn run(max_cpus: Option<usize>, alt_start_cmd: bool) -> Result<(), Box
     tokio::pin!(watchdog);
 
     // Server state includes the user configuration from .spraycc, plus overrides
-    let mut server_state = ServerState::new(callme, max_cpus, alt_start_cmd);
+    let mut server_state = ServerState::new(callme, max_cpus, alt_start_cmd, both_queues, verbose);
     loop {
         tokio::select! {
             socket_res = listener.accept() => {
@@ -337,7 +423,7 @@ pub async fn run(max_cpus: Option<usize>, alt_start_cmd: bool) -> Result<(), Box
                 let remote_id = server_state.add_remote(outbound_tx);
                 let in_tx = inbound_tx.clone();
                 tokio::spawn(async move {
-                    match handle_connection(socket, remote_id, in_tx, outbound_rx).await {
+                    match handle_connection(socket, access_code, remote_id, in_tx, outbound_rx).await {
                         Ok(_) => {
                             // pass
                         }
@@ -354,7 +440,7 @@ pub async fn run(max_cpus: Option<usize>, alt_start_cmd: bool) -> Result<(), Box
                 }
                 server_state.activity_occurred();
             }
-            _ = &mut watchdog, if !watchdog.is_elapsed() => {
+            _ = &mut watchdog => {
                 server_state.update().await?;
                 server_state.report_status(5);
                 server_state.bytes_this_period = ByteUnit::Byte(0);
@@ -362,6 +448,9 @@ pub async fn run(max_cpus: Option<usize>, alt_start_cmd: bool) -> Result<(), Box
             }
         }
 
+        // if watchdog.is_elapsed() {
+        //     watchdog.as_mut().reset(Instant::now() + Duration::from_secs(5));
+        // }
         if server_state.ok_to_shutdown() {
             break;
         }
@@ -385,6 +474,7 @@ pub async fn run(max_cpus: Option<usize>, alt_start_cmd: bool) -> Result<(), Box
 /// Task for handling connections by relating messages between the internal channels and the socket.
 async fn handle_connection(
     stream: TcpStream,
+    server_access_code: u64,
     conn_id: usize,
     tx_chan: mpsc::Sender<(usize, Box<ipc::Message>)>,
     mut rx_chan: mpsc::Receiver<Box<ipc::Message>>,
@@ -394,7 +484,14 @@ async fn handle_connection(
         tokio::select! {
             res = conn.read_message() => {
                 match res {
-                    Ok(Some(msg)) => tx_chan.send((conn_id, Box::new(msg))).await?,
+                    Ok(Some(msg)) => {
+                        let drop = match &msg {
+                            Message::YourObedientServant { access_code }  => *access_code & !1u64 != server_access_code,
+                            Message::Task { access_code, details : _details } => *access_code != server_access_code,
+                            _ => false,
+                        };
+                        tx_chan.send((conn_id, if drop { Box::new(Message::Dropped)} else { Box::new(msg)} )).await?
+                    }
                     Ok(None) => {
                         break;
                     }
@@ -421,8 +518,9 @@ async fn handle_connection(
 /// forwarding a message to another remote.
 async fn handle_msg(server_state: &mut ServerState, conn_id: usize, msg: Box<ipc::Message>) -> Result<(), Box<dyn Error + Send + Sync>> {
     match *msg {
-        ipc::Message::YourObedientServant { access_code: _access_code } => {
-            server_state.remote_is_exec(conn_id).await?;
+        ipc::Message::YourObedientServant { access_code } => {
+            // If the last bit of the access code is '1' it means the exec is from the second queue
+            server_state.remote_is_exec(conn_id, access_code & 0x01 != 0).await?;
         }
         ipc::Message::Task {
             access_code: _access_code,
