@@ -1,76 +1,54 @@
 # SprayCC - a distributed build wrapper
-SprayCC is niche tool focused on those of us building medium- to large-scale C++ applications on
-clusters of hundreds or thousands of CPUs managed by tools like [LSF](https://www.ibm.com/support/knowledgecenter/en/SSETD4/product_welcome_platform_lsf.html), 
-[PBS Pro](https://www.pbspro.org/), or [OpenLava](https://en.wikipedia.org/wiki/OpenLava).
+SprayCC is niche tool focused on those of us building large-scale C++ applications (hundreds or thousands of kLOC) on
+large CPU clusters managed by tools like [LSF](https://www.ibm.com/support/knowledgecenter/en/SSETD4/product_welcome_platform_lsf.html), 
+[PBS Pro](https://www.pbspro.org/), or [OpenLava](https://en.wikipedia.org/wiki/OpenLava). Applications such as these
+can takes 10's of thousands of CPU seconds to build, so distributing builds across a hundred or more CPUs can significant
+improve development productivity. SprayCC is designed to do this and avoid cache coherency issues with distributed
+file systems as well.
 
-What is "medium or large" to me? Typically 250 kLOC up into the millions of LOC and hundreds or thousands 
-of compilation units. Or, said another way, compile times in the hours if only a single machine were used. 
-C and C++ are what I'm familiar with, but some unit test suites work well and most other flows driven by command-line-invoked steps are possible.
-
-SprayCC is functional and useful, though could use some polish. See Usage below.
-
-# Prior Art
-Tools such as [DistCC](https://github.com/distcc/distcc) and [Icecream](https://github.com/icecc/icecream) provide 
-similar capability and inspired some of the development of SprayCC. However, both of these tools rely on running 
-a daemon on the build machines to provide compilation services. This model is appropriate for dedicated build machines 
-or a group of development machines sharing compute resources but doesn't work well on the sorts of clusters targeted by SprayCC, 
-which are organized as a set of queues handling a range of tasks from single-unit compilation or unit tests, to interactive
-sessions, to multi-hour/multi-CPU batch jobs. Running an independent daemon is not possible and trying to manage the daemon
-lifetime via the cluster manager is clumsy.
+SprayCC is functional and useful, though several features and some polish are still planned.
 
 # Project goals
 The loose goals are:
 1. Reduce compilation times for those in this niche by eliminating scheduling latency and using acquired CPU resources for
-multiple tasks, rather than separately jobs for every compilation task.
-1. Avoid NFS cache delay headaches which can introduce build errors or build delays waiting for the cache on one machine
-to reflect results written by another.
-1. Provide an opportunity for me to learn [Rust](https://www.rust-lang.org/) by doing something "real"
+multiple tasks, rather than using separate jobs for every compilation task.
+1. Avoid NFS cache delay headaches which can introduce build errors or failures.
+3. Provide an opportunity for me to learn [Rust](https://www.rust-lang.org/) by doing something "real"
 
-# Usage
-To use SprayCC to build an application, first setup the .spraycc configuration file in your home directory. The file
-spraycc.toml in the source tree provides a template. The most important value to customize is the 'start_cmd' value
-which specifies how to start a SprayCC take in cluster.
+# Quick start
+You can get started with just three steps.
 
-Once the configuration file is set, the server can be started with:
+**One**: Copy the file *spraycc.toml* from the source directory to *.spraycc* in your home directory. There are
+multiple customization options, but 'start_cmd' is the only one which needs to be configured initially. This
+is the command you want it to run to submit a task to the cluster.
 
-    spraycc server
-
-It will report the IP address and port the server is listening on, which configuration file was read, and the start command
-which will be used. This is a good sanity check that all is in order, and the server will exit after some period
-(idle_shutdown_after) if unused. The server needs to be started in the root tree of the project to be built, or above.
-
-To submit tasks using SprayCC, each compile step needs to be prefixed with "spraycc run". For example:
-
-    spraycc run g++ -c hello.cpp -o hello.o
-
-SprayCC will search for the file _.spraycc_server_ in the current directory, or, if not found, each parent directory up to
-the root until found. This instructs it on how to find the server. Once found, the compilation command is submitted to the
-server. The server starts executors as needed and distributes the submitted jobs across all available executors.
-
-How the 'spraycc run' prefix is added depends on the structure of your Make system. In many cases, _bsub_, _gridsub_, or
-other submit command is already inserted and it is just a matter of using 'spraycc run' instead.
-
-Now it is time to do a trial build. For the first run, it can be helpful to start the server in a separate terminal
-from where the build will be performed. In one terminal, start the server:
+**Two**: Start the server in the root of your source tree:
 
     > spraycc server
     Spraycc: Server: 10.100.200.300:45678
     SprayCC: Read config file from /home/jason/.spraycc
     SprayCC: Start command: bsub -q linux -W 1.0 /tools/bin/spraycc exec --callme=10.100.200.300:45678 --code=42
 
-In a different terminal, start the build. In some environments it is common to dump all compile jobs into the queue at
-once, and in others it is preferable to limit the number of CPUs used at with "make -j100" (limit of 100 CPUs) or similar.
-SprayCC is designed to work best with as large a queue of jobs as possible because it scaled well and eventually it will
-prioritize the queue to run longer jobs first.
+It reports the port it is listening on and the command which will be used to submit jobs to your cluster. If you
+see this output, you are ready to compile.
 
-As the job runs, the server will periodically update its status:
+**Three**: Run a build task by prefixing the compilation line with 'spraycc run':
 
-    SprayCC: 19 / 60 finished, 4 running, 4 executors, 243.64KiB / sec
+    spraycc run g++ -c hello.cpp -o hello.o
+    
+The command line plus environment (directory, environment variables, etc) are submitted to the server, which starts
+a process in the cluster and executes this step.
 
-The server will start with 'initial_count' executors, and add 'keep_pending' additional jobs until 'max_count' is
-reached. This avoids saturating a busy queue with too many jobs, but still allows the total number of CPUs to be
-high if the cluster usage is low. The configuration setting 'release_delay' specifies how long to wait after the most
-recent task submission to start releasing executors idle executors and thus CPU resources back to the queue.
+To run a full build, modify the build system to prefix each compilation step with 'spraycc run'. SprayCC will
+distribute the compile steps and keep the link steps locally (it understands GCC/G++ and Clang command lines). When
+a full build is run, use a lot more parallelism than the number of CPUs available so that the server has a large
+queue to work with. For example:
+
+    make -j1000 RELEASE=1
+    
+The 'spraycc run' process is lightweight so it should not bog the local system down.
+
+The server process will terminate after being idle for a period of time.
 
 # Execution structure
 SprayCC consists of a single executable run in one of three modes:
@@ -89,6 +67,16 @@ The server submits one executor for every CPU to be used during the build proces
 CPU slot for the entire duration of the build, scaling down once the task queue depletes. This eliminates the 
 scheduling overhead and latency of submitting hundreds or thousands of small jobs to the cluster manager, while
 also eliminating NFS cache overhead since the generated files are returned to the originating host.
+
+At startup the server writes the file  _.spraycc_server_ in the current directory. This is the file that the runner
+processes will look for in order to know how to connect to the server. Each time the server starts, it creates
+a randon access code which is included in this file. This prevents runner and exector processes (and port scanners
+or other software) from accidentally connecting to the wrong server instance.
+
+If you are using symbolic links in your file system, please be aware that the runner processes will look 'up'
+the real directory tree of the directory where the process is started, not back through the symbolic links
+that may have been traversed to get there. If the server file .spraycc_server is not in a parent of the
+directory the runner started it, it will report that the server hasn't been started.
 
 # Why Rust?
 *Reason number one:* I want to learn Rust and the best way to learn a language is to do something "real". 
