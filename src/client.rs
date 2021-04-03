@@ -105,6 +105,7 @@ pub async fn run(args: Vec<String>) -> Result<i32, Box<dyn Error + Send + Sync>>
                 while !output_files.is_empty() {
                     output_files.pop().unwrap().shutdown().await?
                 }
+                conn.shutdown().await;
             }
             Err(_) => {
                 status = Some(-1);

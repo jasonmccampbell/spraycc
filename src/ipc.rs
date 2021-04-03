@@ -205,9 +205,8 @@ impl Connection {
         Ok(())
     }
 
-    pub async fn shutdown(&mut self) -> Result<()> {
-        self.stream.shutdown().await?;
-        Ok(())
+    pub async fn shutdown(&mut self) {
+        let _ = self.stream.shutdown().await;
     }
 }
 

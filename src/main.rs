@@ -15,6 +15,9 @@ mod config;
 /// # exec
 /// Module implementing the 'exec' subcommand
 mod exec;
+/// # history
+/// Module implementing a history of the elapsed time for each target
+pub mod history;
 /// # ipc
 /// Inter-process communication utilities, mostly focused on message passing
 mod ipc;

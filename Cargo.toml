@@ -16,7 +16,7 @@ lazy_static = "1"
 rand = "^0.8"
 serde = { version = "^1", features = ["derive"] }
 simple-process-stats = "^1"
-tempdir = "0.3"
+tempfile = "^3.2"
 # TODO: Reduce feature set
 tokio = { version = "^1.2", features = ["full"] }
 toml = "0.5"

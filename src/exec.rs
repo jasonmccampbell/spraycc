@@ -1,5 +1,3 @@
-extern crate tempdir;
-
 ///
 /// The executor processes are submitted to the farm and then pull jobs from the
 /// server, execute them, and return the results. The process goes away when told
@@ -55,6 +53,7 @@ pub async fn run(callme: ipc::CallMe) -> Result<(), Box<dyn Error + Send + Sync>
         }
         conn.flush().await?;
     }
+    conn.shutdown().await;
     Ok(())
 }
 

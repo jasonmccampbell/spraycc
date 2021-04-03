@@ -1,10 +1,10 @@
 extern crate gethostname;
-extern crate tempdir;
+extern crate tempfile;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use tempdir::TempDir;
+use tempfile::TempDir;
 use tokio::process;
 
 #[cfg(test)]
@@ -73,7 +73,7 @@ fn redirect_outputs(args: &mut Vec<String>, output_args: &[u16]) -> Result<(Opti
     if output_args.is_empty() {
         Ok((None, output_files))
     } else {
-        let output_dir = TempDir::new("spraycc").unwrap();
+        let output_dir = TempDir::new().unwrap();
         let mut taken_names = std::collections::HashSet::new();
         for i in output_args {
             let path = generate_unique_file(&output_dir, &mut taken_names, &args[*i as usize]);
