@@ -1,12 +1,12 @@
 extern crate home;
 
 use serde::{Deserialize, Serialize};
-use std::fs::{File, OpenOptions};
+use std::collections::HashMap;
+use std::fs::OpenOptions;
 use std::io::{Read, Result, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time;
-use std::{collections::HashMap, net::ToSocketAddrs};
-use tempfile::tempfile;
+use tempfile::NamedTempFile;
 
 /// Maps a unique target (output file, command line, etc) to a pair of the prior elapsed time for that task.
 #[derive(Serialize, Deserialize, Clone)]
@@ -44,7 +44,7 @@ impl History {
 
 /// Reads the current history, returning an empty History object if no data are present.
 pub fn load_current_history() -> History {
-    if let Some(mut home_dir) = home::home_dir() {
+    if let Some(home_dir) = home::home_dir() {
         if let Ok(history) = load_history_internal(&path_to_history(&home_dir)) {
             return history;
         }
@@ -84,29 +84,80 @@ fn read_history_file(path: &PathBuf) -> Result<History> {
 /// Writes the history to a unique, temporary file next to the real history and, once complete, renames
 /// the temporary file to the final name. This avoids potential cases where the history is updated by
 /// two servers at the same time.
-fn write_history_file(history: &History) -> Result<()> {
+fn write_history_file(history: History) -> Result<()> {
     if let Some(home_dir) = home::home_dir() {
-        let tmppath = unique_history_path(&home_dir);
-        let mut f = File::open(&tmppath)?;
-        if let Ok(data) = toml::to_vec(history) {
-            f.write_all(&data[..])?;
-            drop(f);
-
-            std::fs::rename(tmppath, home_dir.join(".spraycc.history"))?;
-        } else {
-            println!("SprayCC: Internal error while serializing history data");
-        }
+        write_history_file_internal(history, home_dir)?;
     } else {
         println!("SprayCC: Unable to get user home directory, history not saved");
     }
     Ok(())
 }
 
-fn unique_history_path(path: &PathBuf) -> PathBuf {
-    // TODO: Not likely to be unique
-    path.join(".spraycc.history.5")
+fn write_history_file_internal(history: History, home_dir: PathBuf) -> Result<()> {
+    let tmp = NamedTempFile::new_in(home_dir.as_path())?;
+
+    // If there is an existing history, load it and this history will be merged into it
+    let mut total_history = load_history_internal(&path_to_history(&home_dir)).unwrap_or(History::new());
+    total_history.merge(history);
+
+    if let Ok(data) = toml::to_vec(&total_history) {
+        // Write the serialized dat and then rename the temporary file to main history file. This rename operation
+        // is atomic, or as atomic as most file systems support.
+        tmp.as_file().write_all(&data[..])?;
+        tmp.persist(path_to_history(&home_dir))?;
+    } else {
+        println!("SprayCC: Internal error while serializing history data");
+    }
+    Ok(())
 }
 
 fn path_to_history(path: &PathBuf) -> PathBuf {
     path.join(".spraycc.history")
+}
+
+#[cfg(test)]
+use tempfile::TempDir;
+
+#[test]
+fn test_read_write_history() {
+    let foo_time = time::Duration::from_secs(5);
+    let bar_time = time::Duration::from_secs(55);
+    let mut h = History::new();
+    h.update("foo.o", foo_time);
+    h.update("bar.o", bar_time);
+
+    let test_dir = TempDir::new_in(".").expect("Failed to create temporary directory in current directory");
+    let home_dir = test_dir.path().to_path_buf();
+    write_history_file_internal(h, home_dir.clone()).expect("Failed writing history");
+
+    let htest = load_history_internal(&path_to_history(&home_dir)).expect("Error loading history file");
+    assert_eq!(htest.get("foo.o"), Some(foo_time));
+    assert_eq!(htest.get("bar.o"), Some(bar_time));
+}
+
+#[test]
+fn test_merge_history() {
+    let foo_time = time::Duration::from_secs(5);
+    let bar_time = time::Duration::from_secs(55);
+    let fuz_time = time::Duration::from_secs(321);
+
+    let test_dir = TempDir::new_in(".").expect("Failed to create temporary directory in current directory");
+    let home_dir = test_dir.path().to_path_buf();
+
+    // Write a base history first
+    let mut h2 = History::new();
+    h2.update("fuz_test", fuz_time);
+    write_history_file_internal(h2, home_dir.clone()).expect("Failed writing base history");
+
+    let mut h = History::new();
+    h.update("foo.o", foo_time);
+    h.update("bar.o", bar_time);
+
+    write_history_file_internal(h, home_dir.clone()).expect("Failed writing history");
+
+    // The history loaded back should be a merge of the two
+    let htest = load_history_internal(&path_to_history(&home_dir)).expect("Error loading history file");
+    assert_eq!(htest.get("foo.o"), Some(foo_time));
+    assert_eq!(htest.get("bar.o"), Some(bar_time));
+    assert_eq!(htest.get("fuz_test"), Some(fuz_time));
 }

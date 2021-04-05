@@ -273,7 +273,7 @@ async fn test_msgs() {
             None => break,
         }
     }
-    conn.shutdown().await.unwrap();
+    conn.shutdown().await;
     assert_eq!(msgs_recvd, 4);
 }
 
