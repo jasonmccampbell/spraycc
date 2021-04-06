@@ -36,6 +36,11 @@ impl History {
         self.history.insert(target.to_string(), (elapsed, time::SystemTime::now()));
     }
 
+    #[cfg(test)]
+    pub fn test_update(self: &mut History, target: &str, elapsed: time::Duration, as_of: time::SystemTime) {
+        self.history.insert(target.to_string(), (elapsed, as_of));
+    }
+
     /// Update 'self' with the more recent entries from the incoming history
     fn merge(self: &mut History, incoming: History) {
         self.history.extend(incoming.history);
@@ -84,7 +89,7 @@ fn read_history_file(path: &PathBuf) -> Result<History> {
 /// Writes the history to a unique, temporary file next to the real history and, once complete, renames
 /// the temporary file to the final name. This avoids potential cases where the history is updated by
 /// two servers at the same time.
-fn write_history_file(history: History) -> Result<()> {
+pub fn write_history_file(history: History) -> Result<()> {
     if let Some(home_dir) = home::home_dir() {
         write_history_file_internal(history, home_dir)?;
     } else {
@@ -99,6 +104,11 @@ fn write_history_file_internal(history: History, home_dir: PathBuf) -> Result<()
     // If there is an existing history, load it and this history will be merged into it
     let mut total_history = load_history_internal(&path_to_history(&home_dir)).unwrap_or(History::new());
     total_history.merge(history);
+
+    // Filter out any entries > 6 months old to avoid unbounded growth
+    // TODO: This really should be done as part (de)serialization
+    let cutoff_time = time::SystemTime::now() - time::Duration::from_secs(3600 * 24 * 366 / 2);
+    total_history.history = total_history.history.into_iter().filter(|(_, (_, as_of))| *as_of > cutoff_time).collect();
 
     if let Ok(data) = toml::to_vec(&total_history) {
         // Write the serialized dat and then rename the temporary file to main history file. This rename operation
@@ -137,9 +147,12 @@ fn test_read_write_history() {
 
 #[test]
 fn test_merge_history() {
+    let old_time = time::Duration::from_secs(7);
     let foo_time = time::Duration::from_secs(5);
     let bar_time = time::Duration::from_secs(55);
     let fuz_time = time::Duration::from_secs(321);
+    let six_mos_ago = time::SystemTime::now() - time::Duration::from_secs(3600 * 24 * 180);
+    let year_ago = six_mos_ago - time::Duration::from_secs(3600 * 24 * 180);
 
     let test_dir = TempDir::new_in(".").expect("Failed to create temporary directory in current directory");
     let home_dir = test_dir.path().to_path_buf();
@@ -147,6 +160,9 @@ fn test_merge_history() {
     // Write a base history first
     let mut h2 = History::new();
     h2.update("fuz_test", fuz_time);
+    h2.test_update("foo.o", old_time, six_mos_ago);
+    h2.test_update("bar.o", old_time, year_ago);
+    h2.test_update("wayold", old_time, year_ago);
     write_history_file_internal(h2, home_dir.clone()).expect("Failed writing base history");
 
     let mut h = History::new();
@@ -160,4 +176,5 @@ fn test_merge_history() {
     assert_eq!(htest.get("foo.o"), Some(foo_time));
     assert_eq!(htest.get("bar.o"), Some(bar_time));
     assert_eq!(htest.get("fuz_test"), Some(fuz_time));
+    assert_eq!(htest.get("wayold"), None);
 }

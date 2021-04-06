@@ -19,6 +19,7 @@ use tokio::time::{Duration, Instant};
 use ubyte::{ByteUnit, ToByteUnit};
 
 use super::config::{load_config_file, write_server_contact_info, ExecConfig};
+use super::history::{load_current_history, write_history_file, History};
 use super::ipc;
 
 const ZERO_DURATION: Duration = Duration::from_secs(0);
@@ -72,6 +73,11 @@ struct ServerState {
     second_start_cmd: Option<String>,
     /// Verbose reporting
     verbose: bool,
+
+    /// Record of prior runs
+    prior_history: History,
+    /// Log of only the latest results
+    in_the_making: History,
 
     // Metrics
     /// Total bytes of files (TaskOutput) messages returned
@@ -132,6 +138,8 @@ impl ServerState {
             start_cmd,
             second_start_cmd,
             verbose,
+            prior_history: load_current_history(),
+            in_the_making: History::new(),
             total_bytes: 0.bytes(),
             bytes_this_period: 0.bytes(),
             total_run_time: Duration::from_secs(0),
