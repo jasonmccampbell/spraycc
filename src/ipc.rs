@@ -62,6 +62,35 @@ pub struct TaskDetails {
     pub env: HashMap<String, String>,
 }
 
+impl TaskDetails {
+    /// Returns an ID string expected (but not guananteed) to be unique across all tasks for
+    /// a given run. In practice, if there are output targets, the string is a concatenation of
+    /// all of these. If no output targets are present, then it is the CWD plus all arguments.
+    ///
+    /// Currently the output targets do _not_ include the CWD, relative or absolute. This means
+    /// two workspaces for the same project will have collisions for the same output target
+    /// (same .o files). This is intended since the elapsed times should normally be reuable,
+    /// but it remains to be seen if this is true in practice.
+    pub fn get_target_id(self: &TaskDetails) -> String {
+        if self.output_args.is_empty() {
+            let mut s = self.working_dir.to_string_lossy().to_string();
+            self.args.iter().for_each(|arg| {
+                s.push(';');
+                s.push_str(arg)
+            });
+            s
+        } else if self.output_args.len() == 1 {
+            self.args[self.output_args[0] as usize].clone()
+        } else {
+            // TODO: In the case of multiple output files do we sort the names?
+            self.output_args
+                .iter()
+                .map(|i| self.args[*i as usize].as_str())
+                .collect::<Vec<&str>>()
+                .join(";")
+        }
+    }
+}
 /// Messages sent between Spraycc processes.
 /// *C++*: This could be done as a trait (interface / base class) or as an enum (enum + struct). A trait
 /// would be more common in open systems so set of messages can be extened without requiring a
@@ -98,6 +127,8 @@ pub enum Message {
     TaskDone {
         /// Task exit status: 0 == success, > 0 error code, < 0 exited with signal. None indicates task failed to stard
         exit_code: Option<i32>,
+        /// Target ID of the task which just completed
+        target_id: String,
         /// Runtime of the task itself
         run_time: time::Duration,
         /// Time requires to send back the results
@@ -131,11 +162,13 @@ impl fmt::Debug for Message {
             Message::TaskFailed { error_message } => write!(f, "TaskDone, error: {}", error_message),
             Message::TaskDone {
                 exit_code,
+                target_id,
                 run_time,
                 send_time,
             } => write!(
                 f,
-                "TaskDone, exit code {}, runtime {}, {}",
+                "TaskDone, {}: exit code {}, runtime {}, {}",
+                target_id,
                 exit_code.unwrap_or(-1),
                 run_time.as_secs_f64(),
                 send_time.as_secs_f64()
@@ -244,6 +277,7 @@ async fn test_msgs() {
         conn.write_message(&Message::YourObedientServant { access_code: 666 }).await.unwrap();
         conn.write_message(&Message::TaskDone {
             exit_code: Some(0),
+            target_id: "".to_string(),
             run_time: Duration::from_secs(2),
             send_time: Duration::from_millis(15),
         })
@@ -286,4 +320,91 @@ async fn next_message(conn: &mut Connection) -> Option<Message> {
             Ok(None) => {} // Nothing ready yet
         }
     }
+}
+
+#[test]
+fn test_task_details_target() {
+    let wd = PathBuf::from("/an/absolute/dir");
+    let cmd = PathBuf::from("/path/to/binary");
+    let env = HashMap::<String, String>::new();
+
+    let t1 = TaskDetails {
+        working_dir: wd.clone(),
+        cmd: cmd.clone(),
+        args: vec!["-c", "-o", "objs/foo.o", "-I", "../include"]
+            .iter()
+            .map(|s| (**s).to_string())
+            .collect(),
+        output_args: vec![2u16],
+        env: env.clone(),
+    };
+    let t1_target = t1.get_target_id();
+
+    let t2 = TaskDetails {
+        working_dir: wd.clone(),
+        cmd: cmd.clone(),
+        args: vec!["-c", "-MF", "objs/foo.d", "objs/foo.o", "-I", "../include"]
+            .iter()
+            .map(|s| (**s).to_string())
+            .collect(),
+        output_args: vec![2u16, 3u16],
+        env: env.clone(),
+    };
+    let t2_target = t2.get_target_id();
+
+    let t3 = TaskDetails {
+        working_dir: wd.clone(),
+        cmd: cmd.clone(),
+        args: vec!["-c", "-I", "../include", "-O3", "-o", "objs/foo.o"]
+            .iter()
+            .map(|s| (**s).to_string())
+            .collect(),
+        output_args: vec![5u16],
+        env: env.clone(),
+    };
+    let t3_target = t3.get_target_id();
+
+    // No output arguments
+
+    let t4 = TaskDetails {
+        working_dir: wd.clone(),
+        cmd: cmd.clone(),
+        args: vec!["run_test", "-test-name", "test1"].iter().map(|s| (**s).to_string()).collect(),
+        output_args: vec![],
+        env: env.clone(),
+    };
+    let t4_target = t4.get_target_id();
+
+    let t5 = TaskDetails {
+        working_dir: wd.clone(),
+        cmd: cmd.clone(),
+        args: vec!["run_test", "-test_name", "test1", "--silent"]
+            .iter()
+            .map(|s| (**s).to_string())
+            .collect(),
+        output_args: vec![],
+        env: env.clone(),
+    };
+    let t5_target = t5.get_target_id();
+
+    let t6 = TaskDetails {
+        working_dir: {
+            let mut w = wd.clone();
+            w.push("extra_path");
+            w
+        },
+        cmd: cmd.clone(),
+        args: vec!["run_test", "-test_name", "test1"].iter().map(|s| (**s).to_string()).collect(),
+        output_args: vec![],
+        env: env.clone(),
+    };
+    let t6_target = t6.get_target_id();
+
+    println!("Targets: {}, {}, {}", &t1_target, &t2_target, &t3_target);
+    println!("         {}, {}, {}", &t4_target, &t5_target, &t6_target);
+    assert_ne!(t1_target, t2_target);
+    assert_eq!(t1_target, t3_target);
+    assert_ne!(t1_target, t4_target);
+    assert_ne!(t4_target, t5_target);
+    assert_ne!(t5_target, t6_target);
 }

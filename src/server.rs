@@ -550,6 +550,7 @@ async fn handle_msg(server_state: &mut ServerState, conn_id: usize, msg: Box<ipc
         }
         ipc::Message::TaskDone {
             exit_code: _,
+            target_id: _,
             run_time,
             send_time,
         } => {
