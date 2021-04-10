@@ -139,7 +139,7 @@ impl ServerState {
             second_start_cmd,
             verbose,
             prior_history: load_current_history(),
-            in_the_making: History::new(),
+            in_the_making: History::default(),
             total_bytes: 0.bytes(),
             bytes_this_period: 0.bytes(),
             total_run_time: Duration::from_secs(0),
@@ -162,6 +162,21 @@ impl ServerState {
                 .unwrap_or(ZERO_DURATION)
                 .as_secs()
                 > self.user_config.idle_shutdown_after;
+    }
+
+    /// Writes any recorded history prior to shutdown
+    fn shutdown(self: &mut ServerState) {
+        if !self.in_the_making.is_empty() {
+            if let Err(err) = write_history_file(std::mem::take(&mut self.in_the_making)) {
+                println!("SprayCC: Warning: error writing history: {}", &err);
+            }
+        }
+    }
+
+    /// Record the elapsed of successful tasks for prioritization next time
+    fn record_elapsed(self: &mut ServerState, target_id: &str, elapsed: std::time::Duration) {
+        println!("History: {} = {:?}", target_id, elapsed);
+        self.in_the_making.update(target_id, elapsed);
     }
 
     /// Sends a message to the host paired with the given host. That is, given an exec host, send a message to the client
@@ -456,13 +471,12 @@ pub async fn run(max_cpus: Option<usize>, alt_start_cmd: bool, both_queues: bool
             }
         }
 
-        // if watchdog.is_elapsed() {
-        //     watchdog.as_mut().reset(Instant::now() + Duration::from_secs(5));
-        // }
         if server_state.ok_to_shutdown() {
             break;
         }
     }
+
+    server_state.shutdown();
 
     let stats = simple_process_stats::ProcessStats::get().await?;
     println!(
@@ -549,12 +563,25 @@ async fn handle_msg(server_state: &mut ServerState, conn_id: usize, msg: Box<ipc
                 .await?;
         }
         ipc::Message::TaskDone {
-            exit_code: _,
-            target_id: _,
+            exit_code,
+            target_id,
             run_time,
             send_time,
         } => {
-            server_state.send_to_paired_remote(conn_id, msg).await?;
+            if exit_code == Some(0) {
+                server_state.record_elapsed(&target_id, run_time);
+            }
+            server_state
+                .send_to_paired_remote(
+                    conn_id,
+                    Box::new(ipc::Message::TaskDone {
+                        exit_code,
+                        target_id,
+                        run_time,
+                        send_time,
+                    }),
+                )
+                .await?;
             server_state.finish_count += 1;
             server_state.exec_is_ready(conn_id).await?;
 

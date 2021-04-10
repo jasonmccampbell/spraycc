@@ -18,12 +18,9 @@ pub struct History {
 }
 
 impl History {
-    /// Constructs a new, empty history for the server to record into
-    pub fn new() -> History {
-        History {
-            version: 1,
-            history: HashMap::new(),
-        }
+    /// True if no records have been loaded or added
+    pub fn is_empty(self: &History) -> bool {
+        self.history.is_empty()
     }
 
     /// Returns the runtime for task
@@ -47,6 +44,15 @@ impl History {
     }
 }
 
+impl Default for History {
+    fn default() -> Self {
+        History {
+            version: 1,
+            history: HashMap::new(),
+        }
+    }
+}
+
 /// Reads the current history, returning an empty History object if no data are present.
 pub fn load_current_history() -> History {
     if let Some(home_dir) = home::home_dir() {
@@ -54,7 +60,7 @@ pub fn load_current_history() -> History {
             return history;
         }
     }
-    History::new()
+    History::default()
 }
 
 /// Loads the history at the given location and returns the History instance or reports a warning to the
@@ -100,21 +106,26 @@ pub fn write_history_file(history: History) -> Result<()> {
 
 fn write_history_file_internal(history: History, home_dir: PathBuf) -> Result<()> {
     let tmp = NamedTempFile::new_in(home_dir.as_path())?;
+    println!("FOO: Writing history");
 
     // If there is an existing history, load it and this history will be merged into it
-    let mut total_history = load_history_internal(&path_to_history(&home_dir)).unwrap_or(History::new());
+    let mut total_history = load_history_internal(&path_to_history(&home_dir)).unwrap_or_default();
     total_history.merge(history);
+    println!("FOO: merged");
 
     // Filter out any entries > 6 months old to avoid unbounded growth
     // TODO: This really should be done as part (de)serialization
     let cutoff_time = time::SystemTime::now() - time::Duration::from_secs(3600 * 24 * 366 / 2);
     total_history.history = total_history.history.into_iter().filter(|(_, (_, as_of))| *as_of > cutoff_time).collect();
+    println!("FOO: filtered");
 
     if let Ok(data) = toml::to_vec(&total_history) {
         // Write the serialized dat and then rename the temporary file to main history file. This rename operation
         // is atomic, or as atomic as most file systems support.
         tmp.as_file().write_all(&data[..])?;
+        println!("FOO: written");
         tmp.persist(path_to_history(&home_dir))?;
+        println!("FOO: persisted");
     } else {
         println!("SprayCC: Internal error while serializing history data");
     }
@@ -132,7 +143,7 @@ use tempfile::TempDir;
 fn test_read_write_history() {
     let foo_time = time::Duration::from_secs(5);
     let bar_time = time::Duration::from_secs(55);
-    let mut h = History::new();
+    let mut h = History::default();
     h.update("foo.o", foo_time);
     h.update("bar.o", bar_time);
 
@@ -158,14 +169,14 @@ fn test_merge_history() {
     let home_dir = test_dir.path().to_path_buf();
 
     // Write a base history first
-    let mut h2 = History::new();
+    let mut h2 = History::default();
     h2.update("fuz_test", fuz_time);
     h2.test_update("foo.o", old_time, six_mos_ago);
     h2.test_update("bar.o", old_time, year_ago);
     h2.test_update("wayold", old_time, year_ago);
     write_history_file_internal(h2, home_dir.clone()).expect("Failed writing base history");
 
-    let mut h = History::new();
+    let mut h = History::default();
     h.update("foo.o", foo_time);
     h.update("bar.o", bar_time);
 
