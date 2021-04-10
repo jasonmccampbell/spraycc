@@ -1,4 +1,5 @@
 extern crate home;
+extern crate serde_json;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -9,6 +10,7 @@ use std::time;
 use tempfile::NamedTempFile;
 
 /// Maps a unique target (output file, command line, etc) to a pair of the prior elapsed time for that task.
+/// TODO: Custom (de)serialization for nicer format and keep target list sorted. Or too pendantic?
 #[derive(Serialize, Deserialize, Clone)]
 pub struct History {
     version: u32,
@@ -87,7 +89,7 @@ fn read_history_file(path: &PathBuf) -> Result<History> {
     let mut buf = String::new();
     f.read_to_string(&mut buf)?;
 
-    let history: History = toml::from_str(&buf)?;
+    let history: History = serde_json::from_str(&buf)?;
     println!("SprayCC: Read history file from {}", path.to_string_lossy());
     Ok(history)
 }
@@ -106,26 +108,22 @@ pub fn write_history_file(history: History) -> Result<()> {
 
 fn write_history_file_internal(history: History, home_dir: PathBuf) -> Result<()> {
     let tmp = NamedTempFile::new_in(home_dir.as_path())?;
-    println!("FOO: Writing history");
 
     // If there is an existing history, load it and this history will be merged into it
     let mut total_history = load_history_internal(&path_to_history(&home_dir)).unwrap_or_default();
     total_history.merge(history);
-    println!("FOO: merged");
 
     // Filter out any entries > 6 months old to avoid unbounded growth
     // TODO: This really should be done as part (de)serialization
     let cutoff_time = time::SystemTime::now() - time::Duration::from_secs(3600 * 24 * 366 / 2);
     total_history.history = total_history.history.into_iter().filter(|(_, (_, as_of))| *as_of > cutoff_time).collect();
-    println!("FOO: filtered");
 
-    if let Ok(data) = toml::to_vec(&total_history) {
+    if let Ok(data) = serde_json::to_vec_pretty(&total_history) {
         // Write the serialized dat and then rename the temporary file to main history file. This rename operation
-        // is atomic, or as atomic as most file systems support.
+        // is atomic, or as atomic as most file systems support, in case the user is running multiple server processes
+        // which happen to shutdown at the "same" time.
         tmp.as_file().write_all(&data[..])?;
-        println!("FOO: written");
         tmp.persist(path_to_history(&home_dir))?;
-        println!("FOO: persisted");
     } else {
         println!("SprayCC: Internal error while serializing history data");
     }

@@ -175,7 +175,6 @@ impl ServerState {
 
     /// Record the elapsed of successful tasks for prioritization next time
     fn record_elapsed(self: &mut ServerState, target_id: &str, elapsed: std::time::Duration) {
-        println!("History: {} = {:?}", target_id, elapsed);
         self.in_the_making.update(target_id, elapsed);
     }
 
