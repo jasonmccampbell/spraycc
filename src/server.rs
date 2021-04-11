@@ -1,4 +1,5 @@
 extern crate get_if_addrs;
+extern crate priority_queue;
 extern crate rand;
 extern crate simple_process_stats;
 extern crate tokio;
@@ -8,6 +9,7 @@ extern crate ubyte;
 // for which socket.
 use get_if_addrs::{get_if_addrs, Interface};
 use ipc::Message;
+use priority_queue::PriorityQueue;
 use std::collections::VecDeque;
 use std::error::Error;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -48,7 +50,7 @@ struct ServerState {
     /// Array position corresponds to the ID of the client/exec.
     remotes: Vec<Remote>,
     /// Queue of tasks submitted and the ID of the client which submitted it, not yet assigned to an exec
-    task_queue: VecDeque<(usize, ipc::TaskDetails)>,
+    task_queue: PriorityQueue<(usize, ipc::TaskDetails), Duration>,
     /// Queue of exec IDs waiting for tasks
     exec_queue: VecDeque<usize>,
     /// Total tasks submitted
@@ -125,7 +127,7 @@ impl ServerState {
 
         ServerState {
             remotes: vec![],
-            task_queue: VecDeque::new(),
+            task_queue: PriorityQueue::new(),
             exec_queue: VecDeque::new(),
             submit_count: 0,
             finish_count: 0,
@@ -236,8 +238,14 @@ impl ServerState {
     /// a task. Queue processing is done as a part of this function, so the submitted task may be sent out immediately
     /// or queued for later processing.
     async fn remote_is_client(self: &mut ServerState, conn_id: usize, details: ipc::TaskDetails) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let target_id = details.get_target_id();
+        let prior = self.prior_history.get(&target_id).unwrap_or(Duration::from_secs(1));
+        if self.verbose {
+            println!("SprayCC: received task {} priority={:?}", &target_id, prior);
+        }
+
         self.remotes[conn_id].conn_type = ConnectionType::Client;
-        self.task_queue.push_back((conn_id, details));
+        self.task_queue.push((conn_id, details), prior);
         self.last_submit_time = Some(SystemTime::now());
         if self.verbose {
             println!("SprayCC: connection {} is a client", conn_id);
@@ -285,9 +293,13 @@ impl ServerState {
     /// Check the task and ready exec queues to see if anything can be assigned
     async fn check_queues(self: &mut ServerState) -> Result<(), Box<dyn Error + Send + Sync>> {
         while !self.task_queue.is_empty() && !self.exec_queue.is_empty() {
-            let (client_id, task) = self.task_queue.pop_front().unwrap();
+            let ((client_id, task), prior) = self.task_queue.pop().unwrap();
             let exec_id = self.exec_queue.pop_front().unwrap();
             assert!(client_id != exec_id, "Somehow exec and client ID are the same");
+
+            if self.verbose {
+                println!("SprayCC: assigned task {} to {}, priority={:?}", task.get_target_id(), exec_id, prior);
+            }
 
             // Pair the client w/ the executor running the task
             let client = &mut self.remotes[client_id];

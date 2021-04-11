@@ -7,6 +7,7 @@ use bytes::{Buf, BytesMut};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::time;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -48,7 +49,7 @@ pub enum OutputType {
 }
 
 /// Describes the task to be started on a remote host
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct TaskDetails {
     /// Directory in which to run the command
     pub working_dir: PathBuf,
@@ -91,6 +92,18 @@ impl TaskDetails {
         }
     }
 }
+
+impl Hash for TaskDetails {
+    /// Hash is required for the priority queue. The output args aren't needed because the same
+    /// information in encoded in 'args'. 'env' is not included because it is expensive and one would
+    /// hope two tasks don't differ only in the captured environment.
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.working_dir.hash(state);
+        self.cmd.hash(state);
+        self.args.hash(state);
+    }
+}
+
 /// Messages sent between Spraycc processes.
 /// *C++*: This could be done as a trait (interface / base class) or as an enum (enum + struct). A trait
 /// would be more common in open systems so set of messages can be extened without requiring a
