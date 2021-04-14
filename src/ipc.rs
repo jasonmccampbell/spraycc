@@ -61,6 +61,9 @@ pub struct TaskDetails {
     pub output_args: Vec<u16>,
     /// Environment variables to be propagated to the execution host
     pub env: HashMap<String, String>,
+    /// Hint that the task should be given high priority relative to other tasks. Ex: dependency generation
+    /// tasks which must complete before others can start.
+    pub priority_task: bool,
 }
 
 impl TaskDetails {
@@ -228,6 +231,7 @@ impl Connection {
         // May get more than a full message, that is ok. A partial message indicates that the connection
         // was broken prematurely.
         if self.buf.len() >= msg_size {
+            // TODO: This could panic if garbage comes in. bincode have a non-panic mechanism?
             let msg = bincode::deserialize(self.buf.as_ref()).expect("Unable to decode message");
             self.buf.advance(msg_size);
             Ok(Some(msg))

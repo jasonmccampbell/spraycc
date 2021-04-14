@@ -238,8 +238,11 @@ impl ServerState {
     /// a task. Queue processing is done as a part of this function, so the submitted task may be sent out immediately
     /// or queued for later processing.
     async fn remote_is_client(self: &mut ServerState, conn_id: usize, details: ipc::TaskDetails) -> Result<(), Box<dyn Error + Send + Sync>> {
+        // Priority tasks get a bump. 300 == over a 5-minute long task
+        let priority = Duration::from_secs(if details.priority_task { 300 } else { 0 });
+
         let target_id = details.get_target_id();
-        let prior = self.prior_history.get(&target_id).unwrap_or(Duration::from_secs(1));
+        let prior = self.prior_history.get(&target_id).unwrap_or(Duration::from_secs(1)) + priority;
         if self.verbose {
             println!("SprayCC: received task {} priority={:?}", &target_id, prior);
         }

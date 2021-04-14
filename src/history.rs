@@ -58,7 +58,9 @@ impl Default for History {
 /// Reads the current history, returning an empty History object if no data are present.
 pub fn load_current_history() -> History {
     if let Some(home_dir) = home::home_dir() {
-        if let Ok(history) = load_history_internal(&path_to_history(&home_dir)) {
+        let pth = path_to_history(&home_dir);
+        if let Ok(history) = load_history_internal(&pth) {
+            println!("SprayCC: Read history file from {}", pth.to_string_lossy());
             return history;
         }
     }
@@ -90,7 +92,6 @@ fn read_history_file(path: &PathBuf) -> Result<History> {
     f.read_to_string(&mut buf)?;
 
     let history: History = serde_json::from_str(&buf)?;
-    println!("SprayCC: Read history file from {}", path.to_string_lossy());
     Ok(history)
 }
 
