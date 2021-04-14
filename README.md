@@ -6,7 +6,7 @@ can takes 10's of thousands of CPU seconds to build, so distributing builds acro
 improve development productivity. SprayCC is designed to do this and avoid cache coherency issues with distributed
 file systems as well.
 
-SprayCC is functional and useful, though several features and some polish are still planned.
+SprayCC is functional and useful, though still being developed.
 
 # Project goals
 The loose goals are:
@@ -77,6 +77,18 @@ If you are using symbolic links in your file system, please be aware that the ru
 the real directory tree of the directory where the process is started, not back through the symbolic links
 that may have been traversed to get there. If the server file .spraycc_server is not in a parent of the
 directory the runner started it, it will report that the server hasn't been started.
+
+# History-based scheduling
+Most of us compile applications. A lot. And similarly run test suites over-and-over. SprayCC makes use of this to
+reduce runtimes by recording the elapsed time for each task that completes successfully. These timings are recorded
+in ~/.spraycc.history.
+
+The next time the server starts it reads the recorded history and uses it to priorize the job queue, longest tasks
+first. This helps to keep it using the full number of CPUs until right at the end. Dependency-generation tasks
+(-M or -MM in Gnu compilers) are bumped up in priority to ensure they run early since they frequently gate the
+starting of additional tasks.
+
+In order to keep the history from growning forever, historical enteries are purged after ~6 months.
 
 # Why Rust?
 *Reason number one:* I want to learn Rust and the best way to learn a language is to do something "real". 
