@@ -33,7 +33,7 @@ pub mod task;
 #[tokio::main]
 async fn main() {
     let matches = App::new("SprayCC")
-        .version("0.8.0")
+        .version("0.9.0")
         .about("SprayCC - distributed compiler wrapper")
         .setting(AppSettings::SubcommandRequiredElseHelp)
         .subcommand(
