@@ -1,4 +1,5 @@
 extern crate get_if_addrs;
+extern crate priority_queue;
 extern crate rand;
 extern crate simple_process_stats;
 extern crate tokio;
@@ -8,6 +9,7 @@ extern crate ubyte;
 // for which socket.
 use get_if_addrs::{get_if_addrs, Interface};
 use ipc::Message;
+use priority_queue::PriorityQueue;
 use std::collections::VecDeque;
 use std::error::Error;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -19,6 +21,7 @@ use tokio::time::{Duration, Instant};
 use ubyte::{ByteUnit, ToByteUnit};
 
 use super::config::{load_config_file, write_server_contact_info, ExecConfig};
+use super::history::{load_current_history, write_history_file, History};
 use super::ipc;
 
 const ZERO_DURATION: Duration = Duration::from_secs(0);
@@ -47,7 +50,7 @@ struct ServerState {
     /// Array position corresponds to the ID of the client/exec.
     remotes: Vec<Remote>,
     /// Queue of tasks submitted and the ID of the client which submitted it, not yet assigned to an exec
-    task_queue: VecDeque<(usize, ipc::TaskDetails)>,
+    task_queue: PriorityQueue<(usize, ipc::TaskDetails), Duration>,
     /// Queue of exec IDs waiting for tasks
     exec_queue: VecDeque<usize>,
     /// Total tasks submitted
@@ -72,6 +75,11 @@ struct ServerState {
     second_start_cmd: Option<String>,
     /// Verbose reporting
     verbose: bool,
+
+    /// Record of prior runs
+    prior_history: History,
+    /// Log of only the latest results
+    in_the_making: History,
 
     // Metrics
     /// Total bytes of files (TaskOutput) messages returned
@@ -119,7 +127,7 @@ impl ServerState {
 
         ServerState {
             remotes: vec![],
-            task_queue: VecDeque::new(),
+            task_queue: PriorityQueue::new(),
             exec_queue: VecDeque::new(),
             submit_count: 0,
             finish_count: 0,
@@ -132,6 +140,8 @@ impl ServerState {
             start_cmd,
             second_start_cmd,
             verbose,
+            prior_history: load_current_history(),
+            in_the_making: History::default(),
             total_bytes: 0.bytes(),
             bytes_this_period: 0.bytes(),
             total_run_time: Duration::from_secs(0),
@@ -154,6 +164,20 @@ impl ServerState {
                 .unwrap_or(ZERO_DURATION)
                 .as_secs()
                 > self.user_config.idle_shutdown_after;
+    }
+
+    /// Writes any recorded history prior to shutdown
+    fn shutdown(self: &mut ServerState) {
+        if !self.in_the_making.is_empty() {
+            if let Err(err) = write_history_file(std::mem::take(&mut self.in_the_making)) {
+                println!("SprayCC: Warning: error writing history: {}", &err);
+            }
+        }
+    }
+
+    /// Record the elapsed of successful tasks for prioritization next time
+    fn record_elapsed(self: &mut ServerState, target_id: &str, elapsed: std::time::Duration) {
+        self.in_the_making.update(target_id, elapsed);
     }
 
     /// Sends a message to the host paired with the given host. That is, given an exec host, send a message to the client
@@ -214,8 +238,17 @@ impl ServerState {
     /// a task. Queue processing is done as a part of this function, so the submitted task may be sent out immediately
     /// or queued for later processing.
     async fn remote_is_client(self: &mut ServerState, conn_id: usize, details: ipc::TaskDetails) -> Result<(), Box<dyn Error + Send + Sync>> {
+        // Priority tasks get a bump. 300 == over a 5-minute long task
+        let priority = Duration::from_secs(if details.priority_task { 300 } else { 0 });
+
+        let target_id = details.get_target_id();
+        let prior = self.prior_history.get(&target_id).unwrap_or(Duration::from_secs(1)) + priority;
+        if self.verbose {
+            println!("SprayCC: received task {} priority={:?}", &target_id, prior);
+        }
+
         self.remotes[conn_id].conn_type = ConnectionType::Client;
-        self.task_queue.push_back((conn_id, details));
+        self.task_queue.push((conn_id, details), prior);
         self.last_submit_time = Some(SystemTime::now());
         if self.verbose {
             println!("SprayCC: connection {} is a client", conn_id);
@@ -263,9 +296,13 @@ impl ServerState {
     /// Check the task and ready exec queues to see if anything can be assigned
     async fn check_queues(self: &mut ServerState) -> Result<(), Box<dyn Error + Send + Sync>> {
         while !self.task_queue.is_empty() && !self.exec_queue.is_empty() {
-            let (client_id, task) = self.task_queue.pop_front().unwrap();
+            let ((client_id, task), prior) = self.task_queue.pop().unwrap();
             let exec_id = self.exec_queue.pop_front().unwrap();
             assert!(client_id != exec_id, "Somehow exec and client ID are the same");
+
+            if self.verbose {
+                println!("SprayCC: assigned task {} to {}, priority={:?}", task.get_target_id(), exec_id, prior);
+            }
 
             // Pair the client w/ the executor running the task
             let client = &mut self.remotes[client_id];
@@ -448,13 +485,12 @@ pub async fn run(max_cpus: Option<usize>, alt_start_cmd: bool, both_queues: bool
             }
         }
 
-        // if watchdog.is_elapsed() {
-        //     watchdog.as_mut().reset(Instant::now() + Duration::from_secs(5));
-        // }
         if server_state.ok_to_shutdown() {
             break;
         }
     }
+
+    server_state.shutdown();
 
     let stats = simple_process_stats::ProcessStats::get().await?;
     println!(
@@ -541,11 +577,25 @@ async fn handle_msg(server_state: &mut ServerState, conn_id: usize, msg: Box<ipc
                 .await?;
         }
         ipc::Message::TaskDone {
-            exit_code: _,
+            exit_code,
+            target_id,
             run_time,
             send_time,
         } => {
-            server_state.send_to_paired_remote(conn_id, msg).await?;
+            if exit_code == Some(0) {
+                server_state.record_elapsed(&target_id, run_time);
+            }
+            server_state
+                .send_to_paired_remote(
+                    conn_id,
+                    Box::new(ipc::Message::TaskDone {
+                        exit_code,
+                        target_id,
+                        run_time,
+                        send_time,
+                    }),
+                )
+                .await?;
             server_state.finish_count += 1;
             server_state.exec_is_ready(conn_id).await?;
 

@@ -15,6 +15,9 @@ mod config;
 /// # exec
 /// Module implementing the 'exec' subcommand
 mod exec;
+/// # history
+/// Module implementing a history of the elapsed time for each target
+pub mod history;
 /// # ipc
 /// Inter-process communication utilities, mostly focused on message passing
 mod ipc;
@@ -30,7 +33,7 @@ pub mod task;
 #[tokio::main]
 async fn main() {
     let matches = App::new("SprayCC")
-        .version("0.8.0")
+        .version("0.9.0")
         .about("SprayCC - distributed compiler wrapper")
         .setting(AppSettings::SubcommandRequiredElseHelp)
         .subcommand(

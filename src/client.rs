@@ -105,6 +105,7 @@ pub async fn run(args: Vec<String>) -> Result<i32, Box<dyn Error + Send + Sync>>
                 while !output_files.is_empty() {
                     output_files.pop().unwrap().shutdown().await?
                 }
+                conn.shutdown().await;
             }
             Err(_) => {
                 status = Some(-1);
@@ -160,6 +161,7 @@ async fn handle_msg(output_files: &mut Vec<LazyFile>, msg: ipc::Message) -> Resu
         }
         ipc::Message::TaskDone {
             exit_code,
+            target_id: _,
             run_time: _,
             send_time: _,
         } => {
@@ -224,13 +226,13 @@ fn interpret_command_line(args: Vec<String>) -> Result<(bool, ipc::TaskDetails),
         Ok(cmd) => {
             let cmd_name = cmd.file_name().map(|s| s.to_string_lossy()).unwrap(); // Can this fail if path exists?
 
-            let (keep_local, output_args) = {
+            let (keep_local, priority_task, output_args) = {
                 if cmd_name == "gcc" || cmd_name == "g++" || cmd_name == "clang" {
                     handle_gnu(&args)
                 } else if cmd_name == "echo" || cmd_name == "ls" {
-                    (false, Vec::new())
+                    (false, false, Vec::new())
                 } else {
-                    (false, Vec::new())
+                    (false, false, Vec::new())
                 }
             };
 
@@ -245,6 +247,7 @@ fn interpret_command_line(args: Vec<String>) -> Result<(bool, ipc::TaskDetails),
                         args,
                         output_args,
                         env,
+                        priority_task,
                     },
                 ))
             } else {
@@ -257,11 +260,12 @@ fn interpret_command_line(args: Vec<String>) -> Result<(bool, ipc::TaskDetails),
 
 /// TODO: Replace with a user-configurable data structure which describes the various compilers and other executes
 /// which may be used.
-fn handle_gnu(args: &[String]) -> (bool, Vec<u16>) {
+fn handle_gnu(args: &[String]) -> (bool, bool, Vec<u16>) {
     // -o and -MF specify output file names.
     // -c, -s, -E, and -MD (dependency generation) are compilation of various sorts and should be remoted; lacking
     // those are linking which is kept local
     let mut keep_local = true;
+    let mut priority_task = false;
     let mut output_idxs: Vec<u16> = Vec::new();
     for idx in 1..args.len() {
         let arg = &args[idx];
@@ -269,9 +273,12 @@ fn handle_gnu(args: &[String]) -> (bool, Vec<u16>) {
             keep_local = false;
         } else if idx < args.len() - 1 && (arg == "-o" || arg == "-MF") {
             output_idxs.push((idx + 1) as u16);
+        } else if arg == "-M" || arg == "-MM" {
+            keep_local = false;
+            priority_task = true; // Dependency generation only
         }
     }
-    (keep_local, output_idxs)
+    (keep_local, priority_task, output_idxs)
 }
 
 #[test]

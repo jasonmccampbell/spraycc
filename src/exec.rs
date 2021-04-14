@@ -1,5 +1,3 @@
-extern crate tempdir;
-
 ///
 /// The executor processes are submitted to the farm and then pull jobs from the
 /// server, execute them, and return the results. The process goes away when told
@@ -55,12 +53,14 @@ pub async fn run(callme: ipc::CallMe) -> Result<(), Box<dyn Error + Send + Sync>
         }
         conn.flush().await?;
     }
+    conn.shutdown().await;
     Ok(())
 }
 
 async fn handle_new_task(conn: &mut ipc::Connection, details: ipc::TaskDetails) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let target_id = details.get_target_id();
     match Task::start(&details.working_dir, &details.cmd, details.args, &details.output_args, &details.env) {
-        Ok(task) => run_task(conn, task).await,
+        Ok(task) => run_task(conn, task, target_id).await,
         Err(err) => {
             conn.write_message(&ipc::Message::TaskFailed { error_message: err }).await?;
             Ok(())
@@ -68,7 +68,7 @@ async fn handle_new_task(conn: &mut ipc::Connection, details: ipc::TaskDetails) 
     }
 }
 
-async fn run_task(conn: &mut ipc::Connection, mut task: Task) -> Result<(), Box<dyn Error + Send + Sync>> {
+async fn run_task(conn: &mut ipc::Connection, mut task: Task, target_id: String) -> Result<(), Box<dyn Error + Send + Sync>> {
     let start_time = time::Instant::now();
     let mut stdout_reader = BufReader::new(task.child.stdout.take().unwrap()).lines();
     let mut stderr_reader = BufReader::new(task.child.stderr.take().unwrap()).lines();
@@ -115,6 +115,7 @@ async fn run_task(conn: &mut ipc::Connection, mut task: Task) -> Result<(), Box<
 
     conn.write_message(&ipc::Message::TaskDone {
         exit_code: status.code(),
+        target_id,
         run_time: task_finish - start_time,
         send_time: send_finish - task_finish,
     })

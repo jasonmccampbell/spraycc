@@ -1,10 +1,10 @@
 extern crate gethostname;
-extern crate tempdir;
+extern crate tempfile;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use tempdir::TempDir;
+use tempfile::{tempdir, TempDir};
 use tokio::process;
 
 #[cfg(test)]
@@ -73,14 +73,18 @@ fn redirect_outputs(args: &mut Vec<String>, output_args: &[u16]) -> Result<(Opti
     if output_args.is_empty() {
         Ok((None, output_files))
     } else {
-        let output_dir = TempDir::new("spraycc").unwrap();
-        let mut taken_names = std::collections::HashSet::new();
-        for i in output_args {
-            let path = generate_unique_file(&output_dir, &mut taken_names, &args[*i as usize]);
-            args[*i as usize] = path.to_string_lossy().to_string();
-            output_files.push(path);
+        match tempdir() {
+            Ok(output_dir) => {
+                let mut taken_names = std::collections::HashSet::new();
+                for i in output_args {
+                    let path = generate_unique_file(&output_dir, &mut taken_names, &args[*i as usize]);
+                    args[*i as usize] = path.to_string_lossy().to_string();
+                    output_files.push(path);
+                }
+                Ok((Some(output_dir), output_files))
+            }
+            Err(e) => Err(format!("Fatal error: unable to create temporary working directory: {}", e)),
         }
-        Ok((Some(output_dir), output_files))
     }
 }
 
@@ -168,7 +172,7 @@ fn task_unique_paths() {
     let pipe_path;
 
     {
-        let pipe_dir = TempDir::new("spraycc").unwrap();
+        let pipe_dir = tempdir().unwrap();
         pipe_path = pipe_dir.path().to_path_buf();
 
         println!("Temporary directory is: {:?}", pipe_dir.path());
