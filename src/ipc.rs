@@ -354,6 +354,7 @@ fn test_task_details_target() {
             .collect(),
         output_args: vec![2u16],
         env: env.clone(),
+        priority_task: false,
     };
     let t1_target = t1.get_target_id();
 
@@ -366,6 +367,7 @@ fn test_task_details_target() {
             .collect(),
         output_args: vec![2u16, 3u16],
         env: env.clone(),
+        priority_task: false,
     };
     let t2_target = t2.get_target_id();
 
@@ -378,6 +380,7 @@ fn test_task_details_target() {
             .collect(),
         output_args: vec![5u16],
         env: env.clone(),
+        priority_task: false,
     };
     let t3_target = t3.get_target_id();
 
@@ -389,6 +392,7 @@ fn test_task_details_target() {
         args: vec!["run_test", "-test-name", "test1"].iter().map(|s| (**s).to_string()).collect(),
         output_args: vec![],
         env: env.clone(),
+        priority_task: false,
     };
     let t4_target = t4.get_target_id();
 
@@ -401,6 +405,7 @@ fn test_task_details_target() {
             .collect(),
         output_args: vec![],
         env: env.clone(),
+        priority_task: false,
     };
     let t5_target = t5.get_target_id();
 
@@ -414,6 +419,7 @@ fn test_task_details_target() {
         args: vec!["run_test", "-test_name", "test1"].iter().map(|s| (**s).to_string()).collect(),
         output_args: vec![],
         env: env.clone(),
+        priority_task: true,
     };
     let t6_target = t6.get_target_id();
 
