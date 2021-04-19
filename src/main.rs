@@ -1,4 +1,5 @@
 extern crate clap;
+extern crate rlimit;
 extern crate tokio;
 
 use clap::{App, AppSettings, Arg, SubCommand};
@@ -98,6 +99,7 @@ async fn main() {
                 )
                 .arg(Arg::with_name("fail").long("fail").help("If present, the exit status is non-zero")),
         )
+        .subcommand(SubCommand::with_name("init").about("Initializes the environment for first-time users"))
         .get_matches();
 
     let res: Result<(), Box<dyn Error + Send + Sync>> = if let Some(server) = matches.subcommand_matches("server") {
@@ -165,6 +167,8 @@ async fn main() {
             panic!("Failing as requested");
         }
         Ok(())
+    } else if let Some(_) = matches.subcommand_matches("init") {
+        initialize_environment()
     } else {
         unreachable!();
     };
@@ -177,4 +181,23 @@ async fn main() {
             1
         }
     });
+}
+
+/// Initializes the environment for first-time users by:
+///   1 - Create a default .spraycc file if it doesn't exist
+///   2 - Create a default .spraycc.private file w/ random user-code if it doesn't exist
+///   3 - Verify the user's environment is otherwise setup correct (enough file descriptors, etc)
+fn initialize_environment() -> Result<(), Box<dyn Error + Send + Sync>> {
+    // Ensure the user has a private key
+    let _ = config::load_user_private_key();
+
+    // Validate the user's rlimit for open file descriptors is high enough
+    if let Ok((soft_limit, _hard_limit)) = rlimit::getrlimit(rlimit::Resource::NOFILE) {
+        println!("Resource limit: {}, {}", soft_limit.as_usize(), _hard_limit);
+        if soft_limit.as_usize() < 2048 {
+            println!("SprayCC: Warning: soft-limit on the number of open file descriptors is {}", soft_limit);
+            println!("         Build parallelism (make -jN or similar) needs to be lower than this, minus the max executors");
+        }
+    }
+    Ok(())
 }

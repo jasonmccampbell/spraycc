@@ -1,13 +1,21 @@
 extern crate home;
+extern crate rand;
 extern crate toml;
 
 use super::ipc;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Result, Write};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 const CONNECT_FILE: &str = ".spraycc-server";
+
+/// A user-specific random key stored in ~/.spraycc.private
+#[derive(Serialize, Deserialize, Debug)]
+struct UserPrivateKey {
+    key: u64,
+}
 
 #[derive(Deserialize, Debug)]
 struct ConfigWrapper {
@@ -155,6 +163,46 @@ fn deserialize_contact_info(p: &PathBuf, f: &mut File) -> Option<ipc::CallMe> {
             None
         }
     }
+}
+
+/// Reads the user's private key from ~/.spraycc.private
+pub fn load_user_private_key() -> u64 {
+    if let Some(mut home_dir) = home::home_dir() {
+        home_dir.push(".spraycc.private");
+        match load_user_private_key_internal(&home_dir) {
+            Ok(key) => return key,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                if let Ok(key) = write_user_private_key(&home_dir) {
+                    return key;
+                }
+            }
+            Err(err) => {
+                println!("SprayCC: Error reading user-private key file {}:\n   {}", home_dir.to_string_lossy(), err);
+            }
+        }
+    }
+    13
+}
+
+fn load_user_private_key_internal(path: &PathBuf) -> Result<u64> {
+    let mut f = OpenOptions::new().read(true).open(&path)?;
+    let mut buf = String::new();
+    f.read_to_string(&mut buf)?;
+
+    let key: UserPrivateKey = toml::from_str(&buf)?;
+    println!("SprayCC: Read config file from {}", path.to_string_lossy());
+    Ok(key.key)
+}
+
+fn write_user_private_key(path: &PathBuf) -> Result<u64> {
+    let key = UserPrivateKey {
+        key: rand::random::<u64>() >> 1,
+    };
+    let mut f = OpenOptions::new().create(true).write(true).mode(0o600).open(path)?;
+    let keystr = toml::to_string(&key).unwrap();
+    f.write_all(keystr.as_bytes())?;
+    println!("SprayCC: Generated user-private key in {}", path.to_string_lossy());
+    Ok(key.key)
 }
 
 #[test]
