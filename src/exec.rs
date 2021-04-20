@@ -11,6 +11,7 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::select;
 
+use super::config;
 use super::ipc;
 use super::task::Task;
 use std::error::Error;
@@ -21,17 +22,24 @@ use std::error::Error;
 ///      2a - Deal with any cancellation messages
 ///  3 - Continue processing tasks until told to terminate
 pub async fn run(callme: ipc::CallMe) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let user_private_key = config::load_user_private_key(false);
+
     let stream = TcpStream::connect(callme.addr).await?;
     let mut conn = ipc::Connection::new(stream);
     conn.write_message(&ipc::Message::YourObedientServant {
         access_code: callme.access_code,
+        user_code: user_private_key,
     })
     .await?;
 
     loop {
         match conn.read_message().await? {
             Some(msg) => match msg {
-                ipc::Message::Task { access_code: _, details } => {
+                ipc::Message::Task {
+                    access_code: _,
+                    user_code: _,
+                    details,
+                } => {
                     // TODO: Blocks, should be spawned so we can listen for cancel messages
                     handle_new_task(&mut conn, details).await?;
                 }

@@ -20,7 +20,7 @@ use tokio::sync::mpsc;
 use tokio::time::{Duration, Instant};
 use ubyte::{ByteUnit, ToByteUnit};
 
-use super::config::{load_config_file, write_server_contact_info, ExecConfig};
+use super::config::ExecConfig;
 use super::history::{load_current_history, write_history_file, History};
 use super::ipc;
 
@@ -69,6 +69,8 @@ struct ServerState {
     last_activity_time: SystemTime,
     /// User configuration parameters
     user_config: ExecConfig,
+    /// User-specific key to avoid party crashers
+    user_private_key: u64,
     /// Exec process start command
     start_cmd: String,
     /// Second start command, if in use
@@ -95,8 +97,8 @@ struct ServerState {
 }
 
 impl ServerState {
-    fn new(port: ipc::CallMe, max_cpus: Option<usize>, alt_start_cmd: bool, both_queues: bool, verbose: bool) -> ServerState {
-        let mut config = load_config_file();
+    fn new(port: ipc::CallMe, user_private_key: u64, max_cpus: Option<usize>, alt_start_cmd: bool, both_queues: bool, verbose: bool) -> ServerState {
+        let mut config = config::load_config_file();
 
         if let Some(c) = max_cpus {
             config.max_count = c;
@@ -137,6 +139,7 @@ impl ServerState {
             last_submit_time: None,
             last_activity_time: SystemTime::now(),
             user_config: config,
+            user_private_key,
             start_cmd,
             second_start_cmd,
             verbose,
@@ -328,6 +331,7 @@ impl ServerState {
             exec.send_chan
                 .send(Box::new(ipc::Message::Task {
                     access_code: 0,
+                    user_code: 0,
                     details: task,
                 }))
                 .await?;
@@ -428,6 +432,13 @@ impl ServerState {
 /// Main server loop. This starts a socket listener to wait for remote connections. Each connection
 /// is spun off as a separate task, which relays backs back over an MPSC.
 pub async fn run(max_cpus: Option<usize>, alt_start_cmd: bool, both_queues: bool, verbose: bool) -> Result<(), Box<dyn Error + Send + Sync>> {
+    // Try to make sure we have enough file descriptors to handle all of the incoming clients + executors
+    config::setup_process_file_limit(false);
+
+    // Load the user's private key and create if needed. Creation isn't ideal because there is a race-condition where
+    // the executors may not see it, but mostly it is ok and keeps the users jobs from failing.
+    let user_key = config::load_user_private_key(true /* create if not yet created */);
+
     let ip_addr = get_network_addr();
     // Toml only allows i64, LSb used to indicate which pool remote started from
     let access_code = (rand::random::<u64>() >> 1) & !1u64;
@@ -440,7 +451,7 @@ pub async fn run(max_cpus: Option<usize>, alt_start_cmd: bool, both_queues: bool
     callme.addr = listener.local_addr()?;
     println!("Spraycc: Server: {}", &callme.addr);
 
-    let _cleaner = write_server_contact_info(&callme)?;
+    let _cleaner = config::write_server_contact_info(&callme)?;
 
     let (inbound_tx, mut inbound_rx) = mpsc::channel::<(usize, Box<ipc::Message>)>(256);
 
@@ -449,7 +460,8 @@ pub async fn run(max_cpus: Option<usize>, alt_start_cmd: bool, both_queues: bool
     tokio::pin!(watchdog);
 
     // Server state includes the user configuration from .spraycc, plus overrides
-    let mut server_state = ServerState::new(callme, max_cpus, alt_start_cmd, both_queues, verbose);
+    let mut server_state = ServerState::new(callme, user_key, max_cpus, alt_start_cmd, both_queues, verbose);
+    let user_private_key = server_state.user_private_key;
     loop {
         tokio::select! {
             socket_res = listener.accept() => {
@@ -460,7 +472,7 @@ pub async fn run(max_cpus: Option<usize>, alt_start_cmd: bool, both_queues: bool
                 let remote_id = server_state.add_remote(outbound_tx);
                 let in_tx = inbound_tx.clone();
                 tokio::spawn(async move {
-                    match handle_connection(socket, access_code, remote_id, in_tx, outbound_rx).await {
+                    match handle_connection(socket, access_code, user_private_key, remote_id, in_tx, outbound_rx).await {
                         Ok(_) => {
                             // pass
                         }
@@ -511,6 +523,7 @@ pub async fn run(max_cpus: Option<usize>, alt_start_cmd: bool, both_queues: bool
 async fn handle_connection(
     stream: TcpStream,
     server_access_code: u64,
+    user_private_key: u64,
     conn_id: usize,
     tx_chan: mpsc::Sender<(usize, Box<ipc::Message>)>,
     mut rx_chan: mpsc::Receiver<Box<ipc::Message>>,
@@ -522,8 +535,8 @@ async fn handle_connection(
                 match res {
                     Ok(Some(msg)) => {
                         let drop = match &msg {
-                            Message::YourObedientServant { access_code }  => *access_code & !1u64 != server_access_code,
-                            Message::Task { access_code, details : _details } => *access_code != server_access_code,
+                            Message::YourObedientServant { access_code, user_code }  => *access_code & !1u64 != server_access_code || *user_code != user_private_key,
+                            Message::Task { access_code, user_code, details : _details } => *access_code != server_access_code || *user_code != user_private_key,
                             _ => false,
                         };
                         tx_chan.send((conn_id, if drop { Box::new(Message::Dropped)} else { Box::new(msg)} )).await?
@@ -554,12 +567,16 @@ async fn handle_connection(
 /// forwarding a message to another remote.
 async fn handle_msg(server_state: &mut ServerState, conn_id: usize, msg: Box<ipc::Message>) -> Result<(), Box<dyn Error + Send + Sync>> {
     match *msg {
-        ipc::Message::YourObedientServant { access_code } => {
+        ipc::Message::YourObedientServant {
+            access_code,
+            user_code: _user_code,
+        } => {
             // If the last bit of the access code is '1' it means the exec is from the second queue
             server_state.remote_is_exec(conn_id, access_code & 0x01 != 0).await?;
         }
         ipc::Message::Task {
             access_code: _access_code,
+            user_code: _user_code,
             details,
         } => {
             server_state.submit_count += 1;
