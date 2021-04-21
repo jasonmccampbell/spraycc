@@ -20,7 +20,7 @@ use tokio::sync::mpsc;
 use tokio::time::{Duration, Instant};
 use ubyte::{ByteUnit, ToByteUnit};
 
-use super::config::ExecConfig;
+use super::config;
 use super::history::{load_current_history, write_history_file, History};
 use super::ipc;
 
@@ -68,7 +68,7 @@ struct ServerState {
     /// Timestamp when last activity occured
     last_activity_time: SystemTime,
     /// User configuration parameters
-    user_config: ExecConfig,
+    user_config: config::ExecConfig,
     /// User-specific key to avoid party crashers
     user_private_key: u64,
     /// Exec process start command
