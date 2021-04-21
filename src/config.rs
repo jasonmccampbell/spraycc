@@ -1,6 +1,7 @@
 extern crate home;
 extern crate rand;
 extern crate rlimit;
+extern crate tempfile;
 extern crate toml;
 
 use super::ipc;
@@ -185,6 +186,7 @@ pub fn load_user_private_key(create_if_not_present: bool) -> u64 {
     13
 }
 
+/// Reads a private key from the given path and returns the key itself or an error
 fn load_user_private_key_internal(path: &PathBuf) -> Result<u64> {
     let mut f = OpenOptions::new().read(true).open(&path)?;
     let mut buf = String::new();
@@ -194,6 +196,8 @@ fn load_user_private_key_internal(path: &PathBuf) -> Result<u64> {
     Ok(key.key)
 }
 
+/// Generates a random private key and writes it to the specified path. The generated
+/// key is returned. The key file is user-private.
 fn write_user_private_key(path: &PathBuf) -> Result<u64> {
     let key = UserPrivateKey {
         key: rand::random::<u64>() >> 1,
@@ -231,6 +235,9 @@ pub fn setup_process_file_limit(verbose: bool) {
     }
 }
 
+#[cfg(test)]
+use std::os::unix::fs::MetadataExt;
+
 #[test]
 fn config_read_write_callme() {
     let config = ipc::CallMe {
@@ -246,4 +253,28 @@ fn config_read_write_callme() {
     }
 
     assert!(read_server_contact_info().is_none());
+}
+
+#[test]
+fn config_read_write_private_key() {
+    let test_dir = tempfile::TempDir::new_in(".").expect("Failed to create temporary directory in current directory");
+    let private_file = test_dir.path().to_path_buf().join("private");
+
+    // Default if it doesn't exist
+    assert!(
+        load_user_private_key_internal(&private_file).is_err(),
+        "Expected error reading private file {:?}",
+        private_file
+    );
+
+    // Create the file
+    let value_new = write_user_private_key(&private_file).expect(&format!("Error writing private file {:?}", private_file));
+
+    // File is user-private?
+    let mode = File::open(&private_file).unwrap().metadata().unwrap().mode();
+    assert_eq!(mode & 0o777, 0o600);
+
+    // Reread the file, same key?
+    let value_reread = load_user_private_key_internal(&private_file).unwrap();
+    assert_eq!(value_new, value_reread);
 }
