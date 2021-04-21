@@ -183,9 +183,8 @@ async fn main() {
 }
 
 /// Initializes the environment for first-time users by:
-///   1 - Create a default .spraycc file if it doesn't exist
-///   2 - Create a default .spraycc.private file w/ random user-code if it doesn't exist
-///   3 - Verify the user's environment is otherwise setup correct (enough file descriptors, etc)
+///   1 - Create a default .spraycc.private file w/ random user-code if it doesn't exist
+///   2 - Verify the user's environment is otherwise setup correct (enough file descriptors, etc)
 fn initialize_environment() -> Result<(), Box<dyn Error + Send + Sync>> {
     // Ensure the user has a private key
     let _ = config::load_user_private_key(true /* create if it doesn't already exist */);
