@@ -118,12 +118,14 @@ pub enum Message {
     /// Executor is ready, sends access code
     YourObedientServant {
         access_code: u64,
+        user_code: u64,
     },
 
     /// Task defintion, from wrapper to server or server to executable. When sent to an executor the
     /// access code is ignored.
     Task {
         access_code: u64,
+        user_code: u64,
         details: TaskDetails,
     },
 
@@ -166,8 +168,12 @@ pub enum Message {
 impl fmt::Debug for Message {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Message::YourObedientServant { access_code } => write!(f, "YourObedientServant: {}", access_code),
-            Message::Task { access_code, details } => write!(f, "Task: code {}, details: {:?}", access_code, details),
+            Message::YourObedientServant { access_code, user_code } => write!(f, "YourObedientServant: {} / {}", access_code, user_code),
+            Message::Task {
+                access_code,
+                user_code,
+                details,
+            } => write!(f, "Task: code {} / {}, details: {:?}", access_code, user_code, details),
             Message::TaskOutput { output_type, content } => match output_type {
                 OutputType::Stderr => {
                     let x = String::from_utf8(content.clone()).unwrap();
@@ -291,7 +297,12 @@ async fn test_msgs() {
     // Spawn a task to send the test message
     tokio::spawn(async move {
         let mut conn = Connection::new(client_sock);
-        conn.write_message(&Message::YourObedientServant { access_code: 666 }).await.unwrap();
+        conn.write_message(&Message::YourObedientServant {
+            access_code: 123,
+            user_code: 666,
+        })
+        .await
+        .unwrap();
         conn.write_message(&Message::TaskDone {
             exit_code: Some(0),
             target_id: "".to_string(),

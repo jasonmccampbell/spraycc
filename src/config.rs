@@ -1,13 +1,23 @@
 extern crate home;
+extern crate rand;
+extern crate rlimit;
+extern crate tempfile;
 extern crate toml;
 
 use super::ipc;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Result, Write};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 const CONNECT_FILE: &str = ".spraycc-server";
+
+/// A user-specific random key stored in ~/.spraycc.private
+#[derive(Serialize, Deserialize, Debug)]
+struct UserPrivateKey {
+    key: u64,
+}
 
 #[derive(Deserialize, Debug)]
 struct ConfigWrapper {
@@ -157,6 +167,77 @@ fn deserialize_contact_info(p: &PathBuf, f: &mut File) -> Option<ipc::CallMe> {
     }
 }
 
+/// Reads the user's private key from ~/.spraycc.private
+pub fn load_user_private_key(create_if_not_present: bool) -> u64 {
+    if let Some(mut home_dir) = home::home_dir() {
+        home_dir.push(".spraycc.private");
+        match load_user_private_key_internal(&home_dir) {
+            Ok(key) => return key,
+            Err(err) if create_if_not_present && err.kind() == std::io::ErrorKind::NotFound => {
+                if let Ok(key) = write_user_private_key(&home_dir) {
+                    return key;
+                }
+            }
+            Err(err) => {
+                println!("SprayCC: Error reading user-private key file {}:\n   {}", home_dir.to_string_lossy(), err);
+            }
+        }
+    }
+    13
+}
+
+/// Reads a private key from the given path and returns the key itself or an error
+fn load_user_private_key_internal(path: &PathBuf) -> Result<u64> {
+    let mut f = OpenOptions::new().read(true).open(&path)?;
+    let mut buf = String::new();
+    f.read_to_string(&mut buf)?;
+
+    let key: UserPrivateKey = toml::from_str(&buf)?;
+    Ok(key.key)
+}
+
+/// Generates a random private key and writes it to the specified path. The generated
+/// key is returned. The key file is user-private.
+fn write_user_private_key(path: &PathBuf) -> Result<u64> {
+    let key = UserPrivateKey {
+        key: rand::random::<u64>() >> 1,
+    };
+    let mut f = OpenOptions::new().create(true).write(true).mode(0o600).open(path)?;
+    let keystr = toml::to_string(&key).unwrap();
+    f.write_all(keystr.as_bytes())?;
+    println!("SprayCC: Generated user-private key in {}", path.to_string_lossy());
+    Ok(key.key)
+}
+
+/// The server requires quite a few open file handles: 1 per exec + 1 per client + 2 per pending exec
+/// On some systems the soft limit is too low. This attempts to raise it to 2048 if needed and lets
+/// the user know if not.
+pub fn setup_process_file_limit(verbose: bool) {
+    // Validate the user's rlimit for open file descriptors is high enough
+    if let Ok((soft_limit, hard_limit)) = rlimit::getrlimit(rlimit::Resource::NOFILE) {
+        // println!("Resource limit: {}, {}", soft_limit.as_usize(), hard_limit);
+        if hard_limit.as_usize() < 2048 {
+            println!(
+                "SprayCC: Warning: hard-limit on open file scriptors (ulimit -n) is only {}, may limit parallelism",
+                hard_limit
+            );
+        } else if soft_limit.as_usize() < 2048 {
+            let new_limit = rlimit::Rlim::from_usize(std::cmp::min(4096, hard_limit.as_usize()));
+            if rlimit::setrlimit(rlimit::Resource::NOFILE, new_limit, hard_limit).is_err() {
+                println!(
+                    "SprayCC: Warning: soft-limit on open file descriptors is only {}, consider using ulimit -n to increase above 2048",
+                    soft_limit
+                );
+            } else if verbose {
+                println!("SprayCC: Successfully increased file descriptor limit to {}", new_limit);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+use std::os::unix::fs::MetadataExt;
+
 #[test]
 fn config_read_write_callme() {
     let config = ipc::CallMe {
@@ -172,4 +253,28 @@ fn config_read_write_callme() {
     }
 
     assert!(read_server_contact_info().is_none());
+}
+
+#[test]
+fn config_read_write_private_key() {
+    let test_dir = tempfile::TempDir::new_in(".").expect("Failed to create temporary directory in current directory");
+    let private_file = test_dir.path().to_path_buf().join("private");
+
+    // Default if it doesn't exist
+    assert!(
+        load_user_private_key_internal(&private_file).is_err(),
+        "Expected error reading private file {:?}",
+        private_file
+    );
+
+    // Create the file
+    let value_new = write_user_private_key(&private_file).expect(&format!("Error writing private file {:?}", private_file));
+
+    // File is user-private?
+    let mode = File::open(&private_file).unwrap().metadata().unwrap().mode();
+    assert_eq!(mode & 0o777, 0o600);
+
+    // Reread the file, same key?
+    let value_reread = load_user_private_key_internal(&private_file).unwrap();
+    assert_eq!(value_new, value_reread);
 }

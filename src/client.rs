@@ -73,6 +73,8 @@ pub async fn run(args: Vec<String>) -> Result<i32, Box<dyn Error + Send + Sync>>
     }
     let (run_local, task) = res.unwrap();
 
+    let user_private_key = config::load_user_private_key(false /* don't create */);
+
     let mut status: Option<i32> = None;
     if run_local {
         status = run_local_task(task).await?;
@@ -86,6 +88,7 @@ pub async fn run(args: Vec<String>) -> Result<i32, Box<dyn Error + Send + Sync>>
                 // Start by sending the task to the server. This tells the server this process is a client as well as providing the task data.
                 conn.write_message(&ipc::Message::Task {
                     access_code: callme.access_code,
+                    user_code: user_private_key,
                     details: task,
                 })
                 .await?;

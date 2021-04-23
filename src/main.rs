@@ -98,6 +98,7 @@ async fn main() {
                 )
                 .arg(Arg::with_name("fail").long("fail").help("If present, the exit status is non-zero")),
         )
+        .subcommand(SubCommand::with_name("init").about("Initializes the environment for first-time users"))
         .get_matches();
 
     let res: Result<(), Box<dyn Error + Send + Sync>> = if let Some(server) = matches.subcommand_matches("server") {
@@ -165,6 +166,8 @@ async fn main() {
             panic!("Failing as requested");
         }
         Ok(())
+    } else if let Some(_) = matches.subcommand_matches("init") {
+        initialize_environment()
     } else {
         unreachable!();
     };
@@ -177,4 +180,15 @@ async fn main() {
             1
         }
     });
+}
+
+/// Initializes the environment for first-time users by:
+///   1 - Create a default .spraycc.private file w/ random user-code if it doesn't exist
+///   2 - Verify the user's environment is otherwise setup correct (enough file descriptors, etc)
+fn initialize_environment() -> Result<(), Box<dyn Error + Send + Sync>> {
+    // Ensure the user has a private key
+    let _ = config::load_user_private_key(true /* create if it doesn't already exist */);
+
+    config::setup_process_file_limit(true);
+    Ok(())
 }
