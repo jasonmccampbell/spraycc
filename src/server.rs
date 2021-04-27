@@ -1,3 +1,4 @@
+extern crate async_ctrlc;
 extern crate get_if_addrs;
 extern crate priority_queue;
 extern crate rand;
@@ -459,6 +460,9 @@ pub async fn run(max_cpus: Option<usize>, alt_start_cmd: bool, both_queues: bool
     let watchdog = tokio::time::sleep(Duration::from_secs(5));
     tokio::pin!(watchdog);
 
+    // Future waiting for ctrl-C signal. Can this realistically fail and need better error handling?
+    let mut ctrlc = async_ctrlc::CtrlC::new().expect("Error installing ctrl-C handler, aborting");
+
     // Server state includes the user configuration from .spraycc, plus overrides
     let mut server_state = ServerState::new(callme, user_key, max_cpus, alt_start_cmd, both_queues, verbose);
     let user_private_key = server_state.user_private_key;
@@ -494,6 +498,10 @@ pub async fn run(max_cpus: Option<usize>, alt_start_cmd: bool, both_queues: bool
                 server_state.report_status(5);
                 server_state.bytes_this_period = ByteUnit::Byte(0);
                 watchdog.as_mut().reset(Instant::now() + Duration::from_secs(5));
+            }
+            _ = &mut ctrlc => {
+                println!("SprayCC: ctrl-C received, shutting down");
+                break;
             }
         }
 
